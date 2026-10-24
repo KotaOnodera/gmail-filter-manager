@@ -1,0 +1,14 @@
+node_modules/
+.clasp.json
+.clasprc.json
+.DS_Store
+coverage/
+.superpowers/
+*.log
+dist/
+.clasp.bound.json
+docs/reference/
+docs/superpowers/
+task_plan.md
+findings.md
+progress.md

@@ -1,0 +1,7 @@
+**/**
+!appsscript.json
+!src/Core.js
+!src/Sync.js
+!src/Sheets.js
+!src/Gmail.js
+!src/Menu.js

@@ -1,0 +1,11 @@
+{
+  "scriptId": "REPLACE_WITH_CONTAINER_BOUND_SCRIPT_ID",
+  "rootDir": ".",
+  "filePushOrder": [
+    "src/Core.js",
+    "src/Sync.js",
+    "src/Sheets.js",
+    "src/Gmail.js",
+    "src/Menu.js"
+  ]
+}
