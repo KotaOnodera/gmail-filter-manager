@@ -19,7 +19,7 @@ const ignore=read('.claspignore').split('\n').map(s=>s.trim()).filter(Boolean);
 assert.deepEqual(ignore,['**/**','!appsscript.json',...sources.map(p=>'!'+p)]);
 const config=JSON.parse(read('.clasp.example.json'));assert.equal(config.rootDir,'.');assert.deepEqual(config.filePushOrder,sources);assert.equal(config.scriptId,'REPLACE_WITH_CONTAINER_BOUND_SCRIPT_ID');
 const installerManifest=JSON.parse(read('installer/appsscript.json'));
-assert.deepEqual(installerManifest.oauthScopes.slice().sort(),['spreadsheets','script.projects','script.external_request','userinfo.email'].map(s=>'https://www.googleapis.com/auth/'+s).sort());
+assert.deepEqual(installerManifest.oauthScopes.slice().sort(),['drive','spreadsheets','script.projects','script.external_request','userinfo.email'].map(s=>'https://www.googleapis.com/auth/'+s).sort());
 const installerContext=vm.createContext({});for(const p of ['src/Core.js','src/Sheets.js','installer/Installer.js'])new vm.Script(read(p),{filename:p}).runInContext(installerContext);
 assert.equal(vm.runInContext('typeof GFM_install',installerContext),'function');
 assert.equal(vm.runInContext('typeof GFM_updateInstalledCode',installerContext),'function');

@@ -11,6 +11,8 @@ GmailフィルターをGoogleスプレッドシートで編集し、差分確認
 
 GFM_installは専用スプレッドシートの作成、Filters / Diff / History / Backupの準備、紐付けGASの作成、同梱ソースの配置・読み返しまで行います。スプレッドシートの手動作成や作成先IDのハードコードは不要です。同じインストーラーの再実行では同じ作成先を利用し、Gmailは変更しません。Googleアカウントの認証とApps Script APIの利用許可は初回に必要です。
 
+**保存先は利用者ごとに設定できます。** 初回実行前に、インストーラーの「プロジェクトの設定 → スクリプトプロパティ」に `GFM_DESTINATION_FOLDER_ID` を追加し、保存先フォルダのIDまたはURLを設定してください。未設定ならマイドライブ直下です。設定値はGitHubへ保存されません。詳しくは[保存先の設定](docs/setup.md#保存先の設定)を参照してください。
+
 ## 検証・ビルド・配置
 
 Node.js 22以上。追加のnpm依存はありません。
@@ -63,7 +65,7 @@ buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時�
 
 単一所有者が自分のGmailを管理する用途です。他の編集者・共有ドライブはサポートしません。
 
-インストーラーはspreadsheets、script.projects、script.external_request、userinfo.emailを要求します。Gmail権限は要求しません。運用用GASはgmail.settings.basic、gmail.labels、spreadsheets、script.container.ui、userinfo.emailを使用し、メール本文取得やメッセージ操作は行いません。
+インストーラーはdrive、spreadsheets、script.projects、script.external_request、userinfo.emailを要求します。Drive権限は保存先フォルダの確認と作成したスプレッドシートの配置に使い、Gmail権限は要求しません。運用用GASはgmail.settings.basic、gmail.labels、spreadsheets、script.container.ui、userinfo.emailを使用し、Driveフォルダ操作やメール本文取得は行いません。
 
 Sheets APIで行のシステム列を更新するため、OAuthは全スプレッドシートを対象とする権限です。運用コードの接続先は現在のコンテナIDに限定しています。
 

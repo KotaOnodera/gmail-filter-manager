@@ -7,7 +7,7 @@
 - Node.js 22以上。
 - 管理対象Gmailと同じGoogleアカウント。
 - [Apps Scriptダッシュボードの設定](https://script.google.com/home/usersettings)でApps Script APIへのアクセスを有効化する。
-- インストーラーのGoogle CloudプロジェクトでApps Script APIを有効化する。必要ならApps Scriptのプロジェクト設定から自分の標準Cloudプロジェクトを関連付ける。[Google公式説明](https://developers.google.com/apps-script/api/how-tos/enable)
+- インストーラーのGoogle CloudプロジェクトでApps Script APIを有効化する。フォルダを指定する場合はGoogle Drive APIも有効化する。必要ならApps Scriptのプロジェクト設定から自分の標準Cloudプロジェクトを関連付ける。[Google公式説明](https://developers.google.com/apps-script/api/how-tos/enable)
 
 API利用許可とOAuth同意はコードから無承認で有効化できません。Workspace管理ポリシーで制限される場合は管理者側の対応が必要です。
 
@@ -37,6 +37,29 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 
 ## 3. GFM_installを実行する
 
+### 保存先の設定
+
+**初回のGFM_install実行前**に、インストーラーのGASエディタで「プロジェクトの設定 → スクリプトプロパティ」を開き、任意で次を追加します。
+
+| プロパティ名 | 値 |
+| --- | --- |
+| `GFM_DESTINATION_FOLDER_ID` | 保存先フォルダのID、またはGoogle DriveのフォルダURL |
+
+フォルダURLの例は `https://drive.google.com/drive/folders/フォルダID` です。コピーしたIDだけでも使えます。利用者自身のインストーラーに設定するため、コードの書き換えや公開リポジトリへの個別設定の保存は不要です。
+
+- 未設定・空欄: 実行者のマイドライブ直下に作成する。
+- 指定あり: フォルダの存在・種類・書き込み権限を確認してから作成し、そのフォルダへ配置する。
+- 無効・権限不足: 作成前に停止する。配置途中で失敗した場合は作成済みIDを保持し、別ファイルを増やさず再開する。
+- 共有ドライブ: 現在の単一所有者モデルでは非対応。マイドライブ内のフォルダを指定する。
+
+自身の所有フォルダ、または実行アカウントへ直接共有された書き込み可能フォルダを利用してください。リンク共有だけでアクセスし、別途resource keyが必要なフォルダは現在の対象外です。
+
+フォルダの共有権限は保存するファイルにも影響します。Gmailの条件や転送先を記録するため、保存先の共有範囲を確認してください。
+
+この設定は初回の作成先を決めるものです。配置前に設定が変わったら元の設定へ戻すよう要求します。**導入完了後に設定を変えて再実行しても、既存のスプレッドシートを自動で移動しません。** 既存ファイルの保存先はGoogle Drive上で手動変更できます。ファイルIDは変わらないので、その後も同じインストールを利用できます。
+
+### 実行
+
 1. 配置したスタンドアロンGASのエディタを開く。
 2. 実行する関数にGFM_installを選んで実行する。
 3. 初回のGoogle認証でインストーラー用権限を確認する。
@@ -64,9 +87,10 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 
 | 対象 | スコープ | 用途 |
 | --- | --- | --- |
+| インストーラー | drive | 指定フォルダの情報・権限確認、作成したファイルの親フォルダ変更 |
 | インストーラー | spreadsheets | ファイル作成・4シート準備 |
 | インストーラー | script.projects | 紐付けGAS作成・ソース配置・検証・更新 |
-| インストーラー | script.external_request | script.googleapis.comへの通信 |
+| インストーラー | script.external_request | Apps Script APIとGoogle Drive APIへの通信 |
 | インストーラー | userinfo.email | 初回実行者との照合 |
 | 運用用GAS | gmail.settings.basic | フィルター管理・転送先一覧 |
 | 運用用GAS | gmail.labels | ラベルID/名前の一覧 |
@@ -74,7 +98,7 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 | 運用用GAS | script.container.ui | メニューと承認ダイアログ |
 | 運用用GAS | userinfo.email | 所有者照合 |
 
-接頭辞はすべてhttps://www.googleapis.com/auth/です。運用用GASにGASプロジェクトの変更権限を付けず、インストーラーにGmail権限を付けません。外部通信先はApps Script APIの固定HTTPSホストです。実行時にGitHubや第三者へ設定を送信しません。
+接頭辞はすべてhttps://www.googleapis.com/auth/です。運用用GASにGASプロジェクト/Driveの変更権限を付けず、インストーラーにGmail権限を付けません。インストーラーのdriveはDrive全体に対する権限ですが、実装は利用者が指定したフォルダの確認と、記録済みスプレッドシートの配置だけに使います。外部通信先はApps Script APIとGoogle Drive APIの固定HTTPSホストです。実行時にGitHubや第三者へ設定を送信しません。[Driveのフォルダ移動API](https://developers.google.com/workspace/drive/api/guides/folder)
 
 Sheets APIのbatchUpdateByDataFilterはspreadsheets.currentonlyを受け付けないため、運用側の権限もspreadsheetsです。実装の操作先IDは現在のコンテナに限定しています。[対応スコープ](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/batchUpdateByDataFilter)
 

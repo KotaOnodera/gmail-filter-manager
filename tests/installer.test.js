@@ -67,3 +67,35 @@ test('Apps Script API client uses fixed HTTPS host, scopes token to header, and 
   client.create('book');assert.equal(observed.url,'https://script.googleapis.com/v1/projects');assert.equal(observed.options.headers.Authorization,'Bearer SECRET');assert.equal(JSON.parse(observed.options.payload).parentId,'book');
   const bad=I.createProjects({token:()=> 'SECRET',fetch:()=>({getResponseCode:()=>403,getContentText:()=> 'SECRET'})});assert.throws(()=>bad.create('book'),e=>e.message.includes('403')&&!e.message.includes('SECRET'));
 });
+function folderHarness(){
+  const h=harness();let destination='folder_12345';const parents=new Map(),folder={id:'folder_12345',name:'My Apps',mimeType:'application/vnd.google-apps.folder',capabilities:{canAddChildren:true}};
+  h.deps.destination=()=>destination;
+  h.deps.drive={folder:id=>{h.events.push('validateFolder');if(id!==folder.id)throw new Error('保存先が不明');return C.clone(folder);},move:(id,target)=>{h.events.push('move');if(h.faults.move){delete h.faults.move;throw new Error('move failed');}parents.set(id,target);if(h.faults.afterMove){delete h.faults.afterMove;throw new Error('afterMove failed');}}};
+  return {...h,folder,parents,setDestination:value=>destination=value};
+}
+test('destination accepts a folder ID or URL and validates it before any creation',()=>{
+  for(const value of ['folder_12345','https://drive.google.com/drive/folders/folder_12345?usp=sharing','https://drive.google.com/drive/u/0/folders/folder_12345']){
+    const h=folderHarness();h.setDestination(value);const result=I.create(h.deps).install();assert.equal(h.parents.get(result.spreadsheetId),'folder_12345');assert.ok(h.events.indexOf('validateFolder')<h.events.indexOf('createBook'));assert.ok(h.events.indexOf('move')<h.events.indexOf('createScript'));
+  }
+});
+test('invalid URL, missing folder, no write permission, trashed folder and shared drive stop before create',()=>{
+  for(const change of [h=>h.setDestination('https://evil.example/folder_12345'),h=>h.setDestination('missing_12345'),h=>h.folder.mimeType='text/plain',h=>h.folder.capabilities.canAddChildren=false,h=>h.folder.trashed=true,h=>h.folder.driveId='shared']){
+    const h=folderHarness();change(h);assert.throws(()=>I.create(h.deps).install());assert.equal(h.books.size,0);assert.equal(h.projects.size,0);
+  }
+});
+test('failed folder placement keeps known spreadsheet and retries without root fallback or duplicate creation',()=>{
+  const h=folderHarness(),i=I.create(h.deps);h.faults.move=true;assert.throws(()=>i.install(),/move/);assert.equal(h.books.size,1);assert.equal(h.projects.size,0);
+  const result=i.install();assert.equal(h.books.size,1);assert.equal(h.parents.get(result.spreadsheetId),'folder_12345');
+});
+test('lost folder placement response reuses same spreadsheet and completes safely',()=>{
+  const h=folderHarness(),i=I.create(h.deps);h.faults.afterMove=true;assert.throws(()=>i.install(),/afterMove/);const id=h.state().spreadsheetId;assert.equal(h.parents.get(id),'folder_12345');assert.equal(i.install().spreadsheetId,id);assert.equal(h.books.size,1);
+});
+test('destination is frozen during initial placement and not reapplied after installation',()=>{
+  const h=folderHarness(),i=I.create(h.deps);h.faults.move=true;assert.throws(()=>i.install());h.setDestination('other_12345');assert.throws(()=>i.install(),/保存先|変更/);assert.equal(h.books.size,1);
+  h.setDestination('folder_12345');i.install();const moves=h.events.filter(e=>e==='move').length;h.setDestination('other_12345');i.install();assert.equal(h.events.filter(e=>e==='move').length,moves);
+});
+test('Drive client performs idempotent verified parent update, never sends tokens outside Google',()=>{
+  let parents=['root'],patches=0;const requests=[];
+  const drive=I.createDrive({token:()=> 'SECRET',fetch:(url,options)=>{requests.push({url,options});assert.ok(url.startsWith('https://www.googleapis.com/drive/v3/files/'));assert.equal(options.headers.Authorization,'Bearer SECRET');if(options.method==='patch'){patches++;assert.ok(url.includes('addParents=folder_12345'));assert.ok(url.includes('removeParents=root'));parents=['folder_12345'];}return {getResponseCode:()=>200,getContentText:()=>JSON.stringify({id:'book',parents})};}});
+  drive.move('book','folder_12345');drive.move('book','folder_12345');assert.equal(patches,1);assert.ok(requests.length>=3);
+});

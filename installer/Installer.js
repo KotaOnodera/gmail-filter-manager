@@ -16,7 +16,24 @@ var GFMInstaller = (function () {
     }
     function save(s){d.state.set(s);if(C.stable(d.state.get())!==C.stable(s))throw new Error('インストール状態の読み返しが不一致です');}
     function actor(){const email=String(d.email()||'').toLowerCase();if(!email)throw new Error('実行者のメールアドレスを確認できません');return email;}
-    function load(){const s=d.state.get();if(s&&s.owner!==actor())throw new Error('初回の実行者/所有者と異なるアカウントです');return s||{owner:actor(),phase:'NEW'};}
+    function destination(){
+      const input=String(d.destination?d.destination()||'':'').trim();if(!input)return '';
+      if(/^[A-Za-z0-9_-]{10,}$/.test(input))return input;
+      const match=input.match(/^https:\/\/drive\.google\.com\/(?:drive\/(?:u\/\d+\/)?folders\/|folders\/)([A-Za-z0-9_-]{10,})(?:[/?#].*)?$/);
+      if(!match)throw new Error('保存先にはGoogle DriveのフォルダIDまたはフォルダURLを指定してください');return match[1];
+    }
+    function load(){
+      const s=d.state.get();if(s&&s.owner!==actor())throw new Error('初回の実行者/所有者と異なるアカウントです');
+      if(!s)return {owner:actor(),phase:'NEW',folderId:destination()};
+      if(!s.folderPlaced&&['NEW','CREATING_SPREADSHEET','SHEET_CREATED'].includes(s.phase)&&destination()!==(s.folderId||''))throw new Error('作成途中に保存先が変更されています。初回の設定へ戻して再開してください');
+      return s;
+    }
+    function validateFolder(id){
+      const folder=d.drive.folder(id);
+      if(!folder||folder.id!==id||folder.mimeType!=='application/vnd.google-apps.folder'||folder.trashed)throw new Error('保存先のフォルダが存在しないか、利用できません');
+      if(folder.driveId)throw new Error('共有ドライブは未対応です。マイドライブ内のフォルダを指定してください');
+      if(!folder.capabilities||folder.capabilities.canAddChildren!==true)throw new Error('保存先フォルダへの書き込み権限がありません');
+    }
     function bookFor(s){const book=d.books.open(s.spreadsheetId),owner=book.getOwner();if(!owner||String(owner.getEmail()).toLowerCase()!==actor())throw new Error('スプレッドシート所有者が異なります');return book;}
     function projectFor(s){const project=d.projects.get(s.scriptId);if(project.scriptId!==s.scriptId||project.parentId!==s.spreadsheetId)throw new Error('GASの親スプレッドシートへの紐付けが一致しません');return project;}
     function initialContent(files,target){
@@ -32,11 +49,13 @@ var GFMInstaller = (function () {
     function installInternal(s,target){
       if(s.phase==='CREATING_SPREADSHEET'||s.phase==='CREATING_SCRIPT')throw new Error('前回の作成結果が不明です。自動再作成は行いません。復旧手順を確認してください');
       if(s.phase==='NEW'){
+        if(s.folderId)validateFolder(s.folderId);
         s.phase='CREATING_SPREADSHEET';save(s);
         const book=d.books.create();s.spreadsheetId=book.getId();s.phase='SHEET_CREATED';save(s);
       }
       const book=bookFor(s);
       if(s.phase==='SHEET_CREATED'){
+        if(!s.folderPlaced){if(s.folderId){validateFolder(s.folderId);d.drive.move(s.spreadsheetId,s.folderId);}s.folderPlaced=true;save(s);}
         d.setup(book);s.phase='SHEET_READY';save(s);
       }
       if(s.phase==='SHEET_READY'){
@@ -98,10 +117,29 @@ var GFMInstaller = (function () {
     const path=id=>'/'+encodeURIComponent(id);
     return {create:parentId=>request('post','',{title:'Gmail Filter Manager',parentId}),get:id=>request('get',path(id)),content:id=>request('get',path(id)+'/content'),put:(id,files)=>request('put',path(id)+'/content',{files})};
   }
+  function createDrive(d){
+    function request(method,id,query){
+      const options={method,headers:{Authorization:'Bearer '+d.token()},muteHttpExceptions:true};
+      if(method==='patch'){options.contentType='application/json';options.payload='{}';}
+      const response=d.fetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(id)+'?'+query,options),status=response.getResponseCode();
+      if(status<200||status>=300)throw new Error('保存先のGoogle Drive API HTTP '+status+'。フォルダとアクセス権限を確認してください');
+      return JSON.parse(response.getContentText());
+    }
+    const parents=id=>request('get',id,'fields=id,parents');
+    return {
+      folder:id=>request('get',id,'supportsAllDrives=true&fields=id,name,mimeType,trashed,driveId,capabilities(canAddChildren)'),
+      move(id,folderId){
+        const current=parents(id);if((current.parents||[]).includes(folderId))return;
+        const remove=(current.parents||[]).length?'&removeParents='+encodeURIComponent(current.parents.join(',')):'';
+        request('patch',id,'addParents='+encodeURIComponent(folderId)+remove+'&fields=id,parents');
+        if(!(parents(id).parents||[]).includes(folderId))throw new Error('保存先フォルダへの配置の読み返しが一致しません');
+      }
+    };
+  }
   function runtime(){
     const props=PropertiesService.getScriptProperties(),key='GFM_INSTALL_STATE';
     const hash=text=>Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8).map(b=>('0'+((b+256)%256).toString(16)).slice(-2)).join('');
-    return create({files:GFMInstallPayload,hash,email:()=>Session.getEffectiveUser().getEmail(),
+    return create({files:GFMInstallPayload,hash,email:()=>Session.getEffectiveUser().getEmail(),destination:()=>props.getProperty('GFM_DESTINATION_FOLDER_ID')||'',
       state:{get:()=>{const v=props.getProperty(key);return v?JSON.parse(v):null;},set:s=>props.setProperty(key,JSON.stringify(s))},
       withLock(fn){const lock=LockService.getScriptLock();if(!lock.tryLock(1000))throw new Error('別のインストール処理が実行中です');try{return fn();}finally{lock.releaseLock();}},
       books:{create:()=>SpreadsheetApp.create('Gmail Filter Manager'),open:id=>SpreadsheetApp.openById(id)},
@@ -110,10 +148,11 @@ var GFMInstaller = (function () {
         if(sheets.length===1&&sheets[0].getLastRow()===0&&!book.getSheetByName('Filters'))sheets[0].setName('Filters');
         GFMSheets.create({book,app:SpreadsheetApp,hash,uuid:()=>Utilities.getUuid()}).setup();
       },
-      projects:createProjects({token:()=>ScriptApp.getOAuthToken(),fetch:(url,options)=>UrlFetchApp.fetch(url,options)})
+      projects:createProjects({token:()=>ScriptApp.getOAuthToken(),fetch:(url,options)=>UrlFetchApp.fetch(url,options)}),
+      drive:createDrive({token:()=>ScriptApp.getOAuthToken(),fetch:(url,options)=>UrlFetchApp.fetch(url,options)})
     });
   }
-  return {create,createProjects,runtime};
+  return {create,createProjects,createDrive,runtime};
 })();
 function GFM_install(){const result=GFMInstaller.runtime().install();console.log('Spreadsheet: '+result.spreadsheetUrl+'\nBound script ID: '+result.scriptId);return result;}
 function GFM_updateInstalledCode(){const result=GFMInstaller.runtime().update();console.log('Spreadsheet: '+result.spreadsheetUrl+'\nBound script ID: '+result.scriptId);return result;}
