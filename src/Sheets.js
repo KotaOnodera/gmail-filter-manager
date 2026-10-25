@@ -118,12 +118,13 @@ var GFMSheets = (function () {
       ensureAnchors();
       const actual=readRows();rs.forEach(r=>{const found=actual.filter(a=>a.RuleKey===r.RuleKey);if(found.length!==1||C.stable(C.config(found))!==C.stable(C.config([Object.fromEntries(C.columns.map(k=>[k,stringify(r[k])]))])))throw new Error('Filters書き込みの読み返しに失敗');});
     }
-    function updateRow(key,patch) {
+    function patchRow(key,patch,editable) {
       const rs=readRows();if(rs.filter(r=>r.RuleKey===key).length!==1)throw new Error('RuleKeyが不明または重複しています: '+key);
       const matches=sheet('Filters').createDeveloperMetadataFinder().withKey('GFM').withValue(token(key)).find();
       if(matches.length!==1)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
       const values=Array(C.columns.length).fill(null);
-      Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k))throw new Error('システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('システム列が長すぎます');values[C.columns.indexOf(k)]=value;});
+      Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k)!==editable)throw new Error(editable?'編集可能な列以外は更新できません: '+k:'システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('セルが長すぎます');values[C.columns.indexOf(k)]=value;});
+      if(!Object.keys(patch).length)return;
       // A metadata ID follows its row when the user sorts. RAW + null skips other cells.
       const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
       if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw new Error('RuleKeyの行が更新できません。削除/並替えを確認してください');
@@ -131,6 +132,9 @@ var GFMSheets = (function () {
       const found=readRows().find(r=>r.RuleKey===key);
       if(!found||Object.keys(patch).some(k=>String(found[k])!==stringify(patch[k])))throw new Error('システム列更新の読み返しが不一致');
     }
+    function updateRow(key,patch){return patchRow(key,patch,false);}
+    function updateEditable(key,patch){return patchRow(key,patch,true);}
+    function readHistory(offset,limit){const all=records('History').reverse();return {items:all.slice(offset,offset+limit),total:all.length};}
     function ensureKeys(uuid) {
       const raw=table('Filters'),s=sheet('Filters');
       raw.forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();ensureAnchors();
@@ -166,7 +170,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {setup,readRows,appendRows,updateRow,ensureKeys,writeDiff,history,backup,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {setup,readRows,appendRows,updateRow,updateEditable,readHistory,ensureKeys,writeDiff,history,backup,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};

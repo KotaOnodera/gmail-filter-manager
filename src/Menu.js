@@ -18,18 +18,8 @@ var GFMMenu = (function () {
   }
   function runtime() {
     const book=SpreadsheetApp.getActiveSpreadsheet(),ui=SpreadsheetApp.getUi();
-    const email=Session.getEffectiveUser().getEmail(),owner=book.getOwner();
-    if(!email||!owner||owner.getEmail().toLowerCase()!==email.toLowerCase())throw new Error('このツールは単一所有者専用です。スプレッドシート所有者のアカウントで実行してください');
-    const hash=text=>Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8).map(b=>('0'+((b+256)%256).toString(16)).slice(-2)).join('');
-    const props=PropertiesService.getDocumentProperties();
-    const state={get:k=>{const v=props.getProperty('GFM:'+k);return v===null?null:JSON.parse(v);},set:(k,v)=>{const s=JSON.stringify(v);if(Utilities.newBlob(s).getBytes().length>8000)throw new Error('永続状態が大きすぎます');props.setProperty('GFM:'+k,s);if(props.getProperty('GFM:'+k)!==s)throw new Error('永続状態の読み返し不一致');},remove:k=>props.deleteProperty('GFM:'+k)};
-    const uuid=()=>Utilities.getUuid(),store=GFMSheets.create({book,app:SpreadsheetApp,api:Sheets,hash,uuid});
-    const deps={store,state,gmail:GFMGmail.create(Gmail),hash,uuid,now:()=>Date.now(),actor:()=>email,notify:message=>book.toast(message,'Gmail管理',5)};
-    function withLock(fn) {
-      const lock=LockService.getDocumentLock();if(!lock||!lock.tryLock(1000))throw new Error('別の処理が実行中です。完了後に再実行してください');
-      try{return fn();}finally{lock.releaseLock();}
-    }
-    return {store,withLock,controller:GFMSync.create(deps),confirm:(title,message)=>ui.alert(title,message,ui.ButtonSet.YES_NO)===ui.Button.YES,show:(title,message)=>ui.alert(title,message,ui.ButtonSet.OK),notify:deps.notify};
+    const d=GFMRuntime.open({book});
+    return {...d,confirm:(title,message)=>ui.alert(title,message,ui.ButtonSet.YES_NO)===ui.Button.YES,show:(title,message)=>ui.alert(title,message,ui.ButtonSet.OK)};
   }
   function run(command) {
     // Alerts must be outside the lock; alerts suspend GAS and release locks.
@@ -49,6 +39,7 @@ function onOpen() {
     .addItem('差分をプレビュー（Dry Run）','GFM_preview')
     .addItem('差分を適用（承認付き）','GFM_apply')
     .addItem('同期結果を検証','GFM_verify')
+    .addItem('Web画面の利用準備','GFM_enableWeb')
     .addSeparator().addItem('履歴を開く','GFM_history').addItem('バックアップを開く','GFM_backup').addToUi();
 }
 function GFM_setup(){GFMMenu.run('setup');}
