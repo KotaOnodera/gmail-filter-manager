@@ -134,7 +134,7 @@ var GFMSheets = (function () {
     }
     function updateRow(key,patch){return patchRow(key,patch,false);}
     function updateEditable(key,patch){return patchRow(key,patch,true);}
-    function readHistory(offset,limit){const all=records('History').reverse();return {items:all.slice(offset,offset+limit),total:all.length};}
+    function readHistory(offset,limit,runId){const all=records('History').filter(r=>!runId||r.RunId===runId).reverse();return {items:all.slice(offset,offset+limit),total:all.length};}
     function ensureKeys(uuid) {
       const raw=table('Filters'),s=sheet('Filters');
       raw.forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();ensureAnchors();

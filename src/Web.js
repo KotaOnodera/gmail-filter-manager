@@ -47,7 +47,7 @@ var GFMWeb = (function () {
     function dispatch(action,input) {
       input=input||{};if(typeof input!=='object'||Array.isArray(input))throw new Error('入力形式が不正です');
       return d.withLock(()=>{
-        if(action==='boot'){const context=d.gmail.read(),rs=d.store.readRows();return {total:rs.length,labels:context.labels,forwarding:context.forwarding.filter(f=>f.verificationStatus==='accepted'),fields:C.editable,account:d.actor()};}
+        if(action==='boot'){const context=d.gmail.read(),rs=d.store.readRows(),last=d.state.get('webOutcome');return {total:rs.length,labels:context.labels,forwarding:context.forwarding.filter(f=>f.verificationStatus==='accepted'),fields:C.editable,account:d.actor(),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
         if(action==='list'){
           const query=String(input.query||'').toLowerCase().slice(0,1000),pg=page(input);
           const all=d.store.readRows(),rs=all.filter(r=>(!input.status||r.Status===input.status)&&['NameOrNote','From','To','Subject','Query','UserLabel'].some(k=>String(r[k]||'').toLowerCase().includes(query)));
@@ -57,7 +57,9 @@ var GFMWeb = (function () {
         if(action==='new'){
           // A bounded set of draft receipts also provides idempotency for a lost save response.
           const keys=d.state.get('draftKeys')||[],fresh=keys.filter(k=>{const v=d.state.get('draft:'+k);if(!v||now()-v.at>24*60*60*1000){d.state.remove('draft:'+k);return false;}return true;});
-          if(fresh.length>=20)throw new Error('新規作成を開きすぎています。24時間後に再試行してください');
+          // Keep recent receipts without making normal daily use hit a hard quota.
+          // An evicted request has no issued draft and can never enter the append path.
+          while(fresh.length>=20)d.state.remove('draft:'+fresh.shift());
           const key=d.uuid(),version=d.uuid(),row=Object.fromEntries(C.editable.map(k=>[k,'']));Object.assign(row,{RuleKey:key,Status:'有効'});
           d.state.set('draft:'+key,{version,at:now()});d.state.set('draftKeys',[...fresh,key]);return {row,version,isNew:true};
         }
@@ -77,8 +79,12 @@ var GFMWeb = (function () {
           const result={...d.controller.apply(c.ticket,true),runId:c.ticket.runId};
           d.state.set('webOutcome',{token:input.token,actor:d.actor(),bookId:d.bookId,result});return result;
         }
+        if(action==='outcome'||action==='acknowledgeOutcome'){
+          const last=d.state.get('webOutcome');if(!last||last.actor!==d.actor()||last.bookId!==d.bookId||last.result.runId!==input.runId)throw new Error('この実行結果は見つかりません。履歴を確認してください');
+          if(action==='acknowledgeOutcome')d.state.set('webOutcome',{...last,acknowledged:true});return last.result;
+        }
         if(action==='verify')return d.controller.verify();
-        if(action==='history'){const p=page(input);return d.store.readHistory(p.offset,p.limit);}
+        if(action==='history'){const p=page(input);return d.store.readHistory(p.offset,p.limit,typeof input.runId==='string'?input.runId.slice(0,200):'');}
         throw new Error('対応していない操作です');
       });
     }

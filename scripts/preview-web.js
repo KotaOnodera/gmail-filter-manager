@@ -9,11 +9,12 @@ const extra=[{id:'newsletter',criteria:{from:'newsletter@example.com'},action:{a
 h.data.filters.push(...extra);store.appendRows(extra.map(x=>C.importFilter(x,labels,crypto.randomUUID())));
 const deps={...h.deps,store,now:()=>Date.now(),actor:()=> 'owner@example.com',bookId:'book',withLock:fn=>fn(),version:r=>hash(C.stable(C.config([r])))};deps.controller=Sync.create(deps);
 const web=W.create(deps);
+let loseApplyResponse=process.env.GFM_PREVIEW_LOST_APPLY==='1';
 function html(){return fs.readFileSync(path.join(root,'Index.html'),'utf8').replace('<?!= styles ?>',fs.readFileSync(path.join(root,'Styles.html'),'utf8')).replace('<?!= client ?>','<script>window.GFM_LOCAL=true;</script>'+fs.readFileSync(path.join(root,'Client.html'),'utf8'));}
 const server=http.createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
   if(req.method==='GET'&&req.url==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(html());return;}
-  if(req.method==='POST'&&req.url==='/api'){let data='';try{for await(const chunk of req){data+=chunk;if(data.length>200000)throw new Error('Too large');}const {command,input}=JSON.parse(data);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:web.dispatch(command,input)}));}catch(err){res.end(JSON.stringify({error:err.message}));}return;}
+  if(req.method==='POST'&&req.url==='/api'){let data='';try{for await(const chunk of req){data+=chunk;if(data.length>200000)throw new Error('Too large');}const {command,input}=JSON.parse(data);res.setHeader('Content-Type','application/json');const result=web.dispatch(command,input);if(command==='apply'&&loseApplyResponse){loseApplyResponse=false;throw new Error('テスト用の通信断: サーバー処理後の応答を喪失');}res.end(JSON.stringify({data:result}));}catch(err){res.end(JSON.stringify({error:err.message}));}return;}
   res.statusCode=404;res.end('Not found');
 });
 server.listen(Number(process.env.GFM_PREVIEW_PORT||4179),'127.0.0.1',()=>console.log('Synthetic local preview: http://127.0.0.1:'+server.address().port));

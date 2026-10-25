@@ -14,3 +14,4 @@ test('history is read newest first with bounded pagination',()=>{
   const f=fixture();for(let i=0;i<3;i++)f.store.history({runId:'run-'+i,command:'PREVIEW',result:'OK'});
   assert.deepEqual(f.store.readHistory(0,2).items.map(r=>r.RunId),['run-2','run-1']);assert.equal(f.store.readHistory(2,2).items[0].RunId,'run-0');assert.equal(f.store.readHistory(0,2).total,3);
 });
+test('history RunId filter never mixes another run into recovery results',()=>{const f=fixture();f.store.history({runId:'target',command:'APPLY',result:'OK'});f.store.history({runId:'other',command:'PREVIEW',result:'OK'});assert.deepEqual(f.store.readHistory(0,20,'target').items.map(r=>r.RunId),['target']);assert.equal(f.store.readHistory(0,20,'target').total,1);});

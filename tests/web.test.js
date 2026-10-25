@@ -30,3 +30,18 @@ test('web import needs matching confirmation; list omits original system JSON',(
   assert.throws(()=>f.web.dispatch('import',{token:'forged'}),/確認/);const c=f.web.dispatch('importCheck',{});assert.equal(f.web.dispatch('import',{token:c.token}).count,0);assert.equal(f.writes.length,0);
   assert.throws(()=>f.web.dispatch('unknown',{}),/操作/);
 });
+test('opening more than twenty drafts does not block new creation, and evicted requests cannot create',()=>{
+  const f=fixture(),first=f.web.dispatch('new',{});let latest;for(let i=0;i<25;i++)latest=f.web.dispatch('new',{});
+  assert.throws(()=>f.web.dispatch('save',{key:first.row.RuleKey,version:first.version,patch:{From:'old-draft@example.com'}}),/再読込|新規/);
+  f.web.dispatch('save',{key:latest.row.RuleKey,version:latest.version,patch:{From:'latest@example.com'}});assert.equal(f.rows.length,2);
+});
+test('more than twenty saved new rows do not exhaust creation and old retry cannot duplicate',()=>{
+  const f=fixture();let old;for(let i=0;i<22;i++){const d=f.web.dispatch('new',{}),input={key:d.row.RuleKey,version:d.version,patch:{From:'new-'+i+'@example.com'}};if(!old)old=input;f.web.dispatch('save',input);}
+  assert.equal(f.rows.length,23);assert.throws(()=>f.web.dispatch('save',old),/変更されています/);assert.equal(f.rows.length,23);
+});
+test('unacknowledged apply result survives reload and can be read by its RunId without another mutation',()=>{
+  const f=fixture();f.rows[0].Subject='updated';const pv=f.web.dispatch('preview',{}),p=f.web.dispatch('prepare',{runId:pv.runId});const result=f.web.dispatch('apply',{token:p.token});
+  assert.equal(f.web.dispatch('boot',{}).unseenOutcome.runId,p.runId);assert.deepEqual(f.web.dispatch('outcome',{runId:p.runId}),result);assert.equal(f.writes.length,2);
+  assert.throws(()=>f.web.dispatch('outcome',{runId:'unrelated'}),/見つかりません/);
+  f.web.dispatch('acknowledgeOutcome',{runId:p.runId});assert.equal(f.web.dispatch('boot',{}).unseenOutcome,null);assert.equal(f.writes.length,2);
+});
