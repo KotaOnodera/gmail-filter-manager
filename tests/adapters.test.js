@@ -26,6 +26,15 @@ test('RuleKey updates target sorted rows, not cached row positions, and reject a
   e.store.updateRow(key,{GmailFilterId:'new'});assert.equal(e.store.readRows().find(r=>r.RuleKey===key).GmailFilterId,'new');
   e.sheets.get('Filters').values[1][0]=key;assert.throws(()=>e.store.updateRow(key,{Result:'x'}),/RuleKey/);
 });
+test('row anchors use unbounded row ranges and recover an import persisted before metadata failed',()=>{
+  const e=env();e.store.setup();const sheet=e.sheets.get('Filters'),row=C.importFilter(base(),labels,key);
+  // A failed import can leave the data row persisted without its row metadata.
+  sheet.values.push(C.columns.map(k=>String(row[k]??'')));
+  assert.throws(()=>sheet.getRange(2,1,1,sheet.getMaxColumns()).addDeveloperMetadata('GFM','bounded'),/arbitrary ranges/);
+  e.store.appendRows([]);e.store.ensureKeys(()=>crypto.randomUUID());
+  assert.equal(sheet.metadata.length,1);assert.equal(sheet.getLastRow(),2);
+  e.store.updateRow(key,{Result:'recovered'});assert.equal(e.store.readRows()[0].Result,'recovered');
+});
 test('backup chunks >50000 characters, verifies hash, handles empty mailbox and preserves snapshots',()=>{
   const e=env();e.store.setup();const state={filters:[{...base(),criteria:{query:'x'.repeat(110000)}}],labels,forwarding:[]};
   const result=e.store.backup(state,'snap','now');assert.equal(result.count,1);assert.deepEqual(e.store.readBackup('snap'),state);

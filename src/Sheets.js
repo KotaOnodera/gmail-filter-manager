@@ -105,7 +105,8 @@ var GFMSheets = (function () {
         if(!r[0]||!token(r[0]))return;
         const found=anchors.filter(m=>m.getValue()===token(r[0]));
         if(found.length>1)throw new Error('RuleKeyの行メタデータが重複しています');
-        if(!found.length)s.getRange(i+2,1,1,s.getMaxColumns()).addDeveloperMetadata('GFM',token(r[0]),d.app.DeveloperMetadataVisibility.DOCUMENT);
+        // A1 row notation leaves columns unbounded; a full-width numeric range is still bounded.
+        if(!found.length)s.getRange((i+2)+':'+(i+2)).addDeveloperMetadata('GFM',token(r[0]),d.app.DeveloperMetadataVisibility.DOCUMENT);
       });
       d.app.flush();readRows();
     }
