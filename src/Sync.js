@@ -209,7 +209,7 @@ var GFMSync = (function () {
       const current=snapshot();
       const entries=selectedKeys?build(current.rows,current.state,selectedKeys).filter(e=>selectedKeys.includes(e.ruleKey)):current.entries;
       const unresolved=entries.filter(e=>!['NOOP','REMOTE_ONLY'].includes(e.operation));
-      const remaining=selectedKeys?current.entries.filter(e=>!selectedKeys.includes(e.ruleKey)&&!['NOOP','REMOTE_ONLY'].includes(e.operation)).length:0;
+      const remaining=selectedKeys?current.entries.filter(e=>!selectedKeys.includes(e.ruleKey)&&(!['NOOP','REMOTE_ONLY'].includes(e.operation)||(e.operation==='NOOP'&&e.matchedId))).length:0;
       const result={ok:unresolved.length===0&&!d.state.get('pending'),unresolved,remoteOnly:current.entries.filter(e=>e.operation==='REMOTE_ONLY').length,remaining};
       log(runId||d.uuid(),'VERIFY',{result:result.ok?'OK':'UNRESOLVED',verification:JSON.stringify({unresolved:unresolved.length,remoteOnly:result.remoteOnly,remaining})});return result;
     }

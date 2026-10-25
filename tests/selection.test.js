@@ -27,3 +27,7 @@ test('partial apply cannot omit a pending cleanup before another replacement',()
 test('a large selected set is stored outside the prepared property',()=>{
   const rows=Array.from({length:500},(_,i)=>({RuleKey:require('node:crypto').randomUUID(),Status:'無効',NameOrNote:String(i)}));const h=harness({filters:[],rows}),sync=S.create(h.deps);sync.preview();const t=sync.prepare(rows.map(r=>r.RuleKey));assert.ok(JSON.stringify(t).length<8000);assert.equal(h.scopes[t.snapshotId].length,500);
 });
+test('remaining includes an unselected ID link shown by the next preview',()=>{
+  const f=fixture();f.rows[1].Subject='';f.rows[1].GmailFilterId='';f.sync.preview();const result=f.sync.apply(f.sync.prepare([key]),true);assert.equal(result.status,'OK');assert.equal(result.remaining,1);assert.equal(f.rows[1].GmailFilterId,'');
+  const next=f.sync.preview();assert.equal(next.entries.find(e=>e.ruleKey===other).matchedId,'other');f.sync.apply(f.sync.prepare(),true);assert.equal(f.rows[1].GmailFilterId,'other');assert.equal(f.writes.length,2);
+});
