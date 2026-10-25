@@ -7,7 +7,7 @@ assert.equal(manifest.runtimeVersion,'V8');assert.equal(manifest.timeZone,'Asia/
 assert.deepEqual(manifest.dependencies.enabledAdvancedServices,[{userSymbol:'Gmail',version:'v1',serviceId:'gmail'},{userSymbol:'Sheets',version:'v4',serviceId:'sheets'}]);
 const suffixes=['gmail.settings.basic','gmail.labels','spreadsheets','script.container.ui','userinfo.email'];
 assert.deepEqual(manifest.oauthScopes.slice().sort(),suffixes.map(s=>'https://www.googleapis.com/auth/'+s).sort());
-const sources=['Core','Sync','Sheets','Gmail','Menu'].map(s=>'src/'+s+'.js');
+const sources=['Core','Sync','Sheets','Gmail','Runtime','Menu','Web'].map(s=>'src/'+s+'.js');
 const context=vm.createContext({});
 for(const source of sources.slice().reverse()){
   const code=read(source);new vm.Script(code,{filename:source}).runInContext(context);
@@ -16,7 +16,7 @@ for(const source of sources.slice().reverse()){
 assert.equal(vm.runInContext('typeof onOpen',context),'function');
 for(const callback of ['setup','import','preview','apply','verify','history','backup'])assert.equal(vm.runInContext('typeof GFM_'+callback,context),'function');
 const ignore=read('.claspignore').split('\n').map(s=>s.trim()).filter(Boolean);
-assert.deepEqual(ignore,['**/**','!appsscript.json',...sources.map(p=>'!'+p)]);
+assert.deepEqual(ignore,['**/**','!appsscript.json',...sources.map(p=>'!'+p),'!Index.html','!Styles.html','!Client.html']);
 const config=JSON.parse(read('.clasp.example.json'));assert.equal(config.rootDir,'.');assert.deepEqual(config.filePushOrder,sources);assert.equal(config.scriptId,'REPLACE_WITH_CONTAINER_BOUND_SCRIPT_ID');
 const installerManifest=JSON.parse(read('installer/appsscript.json'));
 assert.deepEqual(installerManifest.oauthScopes.slice().sort(),['drive','spreadsheets','script.projects','script.external_request','userinfo.email'].map(s=>'https://www.googleapis.com/auth/'+s).sort());

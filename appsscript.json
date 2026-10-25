@@ -8,6 +8,7 @@
   },
   "exceptionLogging": "NONE",
   "runtimeVersion": "V8",
+  "webapp": { "access": "MYSELF", "executeAs": "USER_ACCESSING" },
   "oauthScopes": [
     "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/gmail.labels",

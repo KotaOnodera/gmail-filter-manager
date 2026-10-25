@@ -6,6 +6,8 @@
     "src/Sync.js",
     "src/Sheets.js",
     "src/Gmail.js",
-    "src/Menu.js"
+    "src/Runtime.js",
+    "src/Menu.js",
+    "src/Web.js"
   ]
 }

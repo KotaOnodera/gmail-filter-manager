@@ -10,8 +10,8 @@ var GFMInstaller = (function () {
       return d.hash(C.stable(normalized));
     }
     function payload(){
-      const names=['Core','Sync','Sheets','Gmail','Menu','appsscript'];
-      if(!Array.isArray(d.files)||d.files.length!==names.length||names.some(name=>d.files.filter(f=>f.name===name).length!==1)||d.files.some(f=>typeof f.source!=='string'||f.type!==(f.name==='appsscript'?'JSON':'SERVER_JS')))throw new Error('同梱ソースが不完全です。npm run buildを再実行してください');
+      const names=['Core','Sync','Sheets','Gmail','Runtime','Menu','Web','Index','Styles','Client','appsscript'];
+      if(!Array.isArray(d.files)||d.files.length!==names.length||names.some(name=>d.files.filter(f=>f.name===name).length!==1)||d.files.some(f=>typeof f.source!=='string'||f.type!==(f.name==='appsscript'?'JSON':['Index','Styles','Client'].includes(f.name)?'HTML':'SERVER_JS')))throw new Error('同梱ソースが不完全です。npm run buildを再実行してください');
       return {files:C.clone(d.files),hash:fingerprint(d.files)};
     }
     function save(s){d.state.set(s);if(C.stable(d.state.get())!==C.stable(s))throw new Error('インストール状態の読み返しが不一致です');}

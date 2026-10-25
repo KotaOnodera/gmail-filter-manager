@@ -4,4 +4,9 @@
 !src/Sync.js
 !src/Sheets.js
 !src/Gmail.js
+!src/Runtime.js
 !src/Menu.js
+!src/Web.js
+!Index.html
+!Styles.html
+!Client.html
