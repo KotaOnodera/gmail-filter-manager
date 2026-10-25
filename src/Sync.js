@@ -50,8 +50,8 @@ var GFMSync = (function () {
       } else throw new Error('不明な操作ジャーナル。復旧が必要');
       d.state.remove('pending');clearPreview();
     }
-    function build(rs,state) {
-      let entries=C.plan(rs,state);
+    function build(rs,state,selectedKeys) {
+      let entries=C.plan(rs,state,selectedKeys);
       const cleanup=d.state.get('cleanup');
       if(cleanup) {
         const old=state.filters.find(f=>f.id===cleanup.oldId),r=rs.find(r=>r.RuleKey===cleanup.ruleKey);
@@ -78,8 +78,16 @@ var GFMSync = (function () {
       const saved=d.state.get('preview');if(!saved)throw new Error('差分を再プレビューしてください');
       const current=snapshot();
       if(saved.fingerprint!==current.fingerprint)throw new Error('プレビュー後に設定またはGmailが変更されています。再プレビューしてください');
-      if(current.entries.some(e=>e.operation==='ERROR'))throw new Error('入力エラーがあります。Diffを確認してください');
       return Object.assign(current,{runId:saved.runId});
+    }
+    function targets(current,keys) {
+      if(keys!==null) {
+        if(!Array.isArray(keys)||!keys.length||new Set(keys).size!==keys.length||keys.some(k=>typeof k!=='string'||current.rows.filter(r=>r.RuleKey===k).length!==1))throw new Error('適用するフィルターの選択が不正です');
+        const cleanup=d.state.get('cleanup');if(cleanup&&!keys.includes(cleanup.ruleKey))throw new Error('中断した復旧対象を含めて選択してください');
+      }
+      const entries=keys===null?current.entries:build(current.rows,current.state,keys).filter(e=>keys.includes(e.ruleKey));
+      if(entries.some(e=>e.operation==='ERROR'))throw new Error('選択対象に入力エラーがあります。スプシとDiffを確認してください');
+      return entries;
     }
     function importAll(approved,ticket) {
       if(d.state.get('pending')||d.state.get('cleanup'))throw new Error('中断状態を先に差分プレビューで復旧してください');
@@ -106,30 +114,38 @@ var GFMSync = (function () {
       d.store.writeDiff(runId,current.entries);
       d.state.set('preview',{runId,fingerprint:current.fingerprint,at:date()});
       log(runId,'PREVIEW',{result:current.entries.some(e=>e.operation==='ERROR')?'ERROR':'OK',verification:JSON.stringify(summary(current.entries))});
-      return {runId,entries:current.entries,summary:summary(current.entries)};
+      return {runId,entries:current.entries,summary:summary(current.entries),labels:current.state.labels};
     }
-    function prepare() {
+    function prepareView(selectedKeys) {
       d.state.remove('prepared');
       if(d.state.get('pending'))throw new Error('中断操作があります。再プレビューしてください');
       const current=checkedPreview();
+      const keys=selectedKeys===undefined||selectedKeys===null?null:selectedKeys;
+      const entries=targets(current,keys);
       const snapshotId=backup(current.state);
-      const ticket={runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(current.entries),preparedAt:d.now()};
-      d.state.set('prepared',ticket);return C.clone(ticket);
+      const ticket={runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(entries),preparedAt:d.now()};
+      if(keys!==null){const canonical=keys.slice().sort();d.store.writeScope(snapshotId,canonical,date());const actual=d.store.readScope(snapshotId);if(C.stable(actual)!==C.stable(canonical))throw new Error('選択対象の保存に失敗しました');ticket.selection={hash:digest(canonical),count:canonical.length};}
+      d.state.set('prepared',ticket);return {ticket:C.clone(ticket),entries:C.clone(entries),labels:C.clone(current.state.labels)};
     }
+    function prepare(selectedKeys){return prepareView(selectedKeys).ticket;}
     function apply(ticket,approved) {
       const prepared=d.state.get('prepared');
       if(!prepared||C.stable(ticket)!==C.stable(prepared))throw new Error('承認準備が失効しました。再プレビューしてください');
       if(!approved){clearPreview();log(ticket.runId,'APPLY',{result:'CANCELLED',snapshotId:ticket.snapshotId});return {status:'CANCELLED',completed:0};}
       if(d.now()-prepared.preparedAt>15*60*1000)throw new Error('承認待ちが15分を超えました。再プレビューしてください');
       const current=checkedPreview();checkBackup(ticket.snapshotId,current.state);
+      let keys=null;
+      if(ticket.selection){keys=d.store.readScope(ticket.snapshotId);if(!Array.isArray(keys)||keys.length!==ticket.selection.count||digest(keys)!==ticket.selection.hash)throw new Error('保存済みの選択対象が一致しません');}
+      current.entries=targets(current,keys);
+      if(C.stable(summary(current.entries))!==C.stable(ticket.summary))throw new Error('承認した選択対象の差分が一致しません');
       if(d.state.get('pending'))throw new Error('中断操作があります。再プレビューしてください');
       clearPreview();
-      const start=d.now();let completed=0,mutations=0,status='OK',error='';
+      const start=d.now();let completed=0,mutations=0,status='OK',error='',remaining=null;
       const expectedRows=C.clone(current.rows),expectedState=C.clone(current.state);
       const assertRows=()=>{if(digest(C.config(rows()))!==digest(C.config(expectedRows)))throw new Error('実行中にFiltersが変更されました。再プレビューが必要');};
       const assertState=state=>{if(digest(C.remote(state))!==digest(C.remote(expectedState)))throw new Error('実行中にGmailが変更されました。再プレビューが必要');};
       function ownPatch(key,values){assertRows();patch(key,values);Object.assign(expectedRows.find(r=>r.RuleKey===key),values);assertRows();}
-      log(ticket.runId,'APPLY',{result:'START',snapshotId:ticket.snapshotId,verification:JSON.stringify(ticket.summary)});
+      log(ticket.runId,'APPLY',{result:'START',snapshotId:ticket.snapshotId,verification:JSON.stringify({...ticket.summary,scope:keys?'SELECTED':'ALL',selected:keys?keys.length:undefined})});
       try {
         for(const e of current.entries) {
           if(e.operation==='REMOTE_ONLY')continue;
@@ -180,22 +196,24 @@ var GFMSync = (function () {
           d.state.remove('pending');if(e.cleanup||e.operation==='REPLACE')d.state.remove('cleanup');
           completed++;
         }
-        const verification=verify(ticket.runId);
+        const verification=verify(ticket.runId,keys);remaining=verification.remaining;
         if(status==='OK'&&!verification.ok)status='RECOVERY_REQUIRED';
       } catch(err) {
         status=d.state.get('pending')?'RECOVERY_REQUIRED':'PARTIAL';error=err.message;
         try{log(ticket.runId,'APPLY',{result:status,error,snapshotId:ticket.snapshotId});}catch(logError){error+=' / 履歴書き込み失敗: '+logError.message;}
       }
       log(ticket.runId,'APPLY',{result:status,error,snapshotId:ticket.snapshotId,verification:'completed='+completed});
-      return {status,completed,error,runId:ticket.runId};
+      return {status,completed,error,runId:ticket.runId,remaining};
     }
-    function verify(runId) {
+    function verify(runId,selectedKeys) {
       const current=snapshot();
-      const unresolved=current.entries.filter(e=>!['NOOP','REMOTE_ONLY'].includes(e.operation));
-      const result={ok:unresolved.length===0&&!d.state.get('pending'),unresolved,remoteOnly:current.entries.filter(e=>e.operation==='REMOTE_ONLY').length};
-      log(runId||d.uuid(),'VERIFY',{result:result.ok?'OK':'UNRESOLVED',verification:JSON.stringify({unresolved:unresolved.length,remoteOnly:result.remoteOnly})});return result;
+      const entries=selectedKeys?build(current.rows,current.state,selectedKeys).filter(e=>selectedKeys.includes(e.ruleKey)):current.entries;
+      const unresolved=entries.filter(e=>!['NOOP','REMOTE_ONLY'].includes(e.operation));
+      const remaining=selectedKeys?current.entries.filter(e=>!selectedKeys.includes(e.ruleKey)&&!['NOOP','REMOTE_ONLY'].includes(e.operation)).length:0;
+      const result={ok:unresolved.length===0&&!d.state.get('pending'),unresolved,remoteOnly:current.entries.filter(e=>e.operation==='REMOTE_ONLY').length,remaining};
+      log(runId||d.uuid(),'VERIFY',{result:result.ok?'OK':'UNRESOLVED',verification:JSON.stringify({unresolved:unresolved.length,remoteOnly:result.remoteOnly,remaining})});return result;
     }
-    return {importAll,preview,prepare,apply,verify};
+    return {importAll,preview,prepare,prepareView,apply,verify};
   }
   return {create};
 })();

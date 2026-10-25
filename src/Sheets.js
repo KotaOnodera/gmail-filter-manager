@@ -118,12 +118,12 @@ var GFMSheets = (function () {
       ensureAnchors();
       const actual=readRows();rs.forEach(r=>{const found=actual.filter(a=>a.RuleKey===r.RuleKey);if(found.length!==1||C.stable(C.config(found))!==C.stable(C.config([Object.fromEntries(C.columns.map(k=>[k,stringify(r[k])]))])))throw new Error('Filters書き込みの読み返しに失敗');});
     }
-    function patchRow(key,patch,editable) {
+    function updateRow(key,patch) {
       const rs=readRows();if(rs.filter(r=>r.RuleKey===key).length!==1)throw new Error('RuleKeyが不明または重複しています: '+key);
       const matches=sheet('Filters').createDeveloperMetadataFinder().withKey('GFM').withValue(token(key)).find();
       if(matches.length!==1)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
       const values=Array(C.columns.length).fill(null);
-      Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k)!==editable)throw new Error(editable?'編集可能な列以外は更新できません: '+k:'システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('セルが長すぎます');values[C.columns.indexOf(k)]=value;});
+      Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k))throw new Error('システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('セルが長すぎます');values[C.columns.indexOf(k)]=value;});
       if(!Object.keys(patch).length)return;
       // A metadata ID follows its row when the user sorts. RAW + null skips other cells.
       const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
@@ -132,8 +132,6 @@ var GFMSheets = (function () {
       const found=readRows().find(r=>r.RuleKey===key);
       if(!found||Object.keys(patch).some(k=>String(found[k])!==stringify(patch[k])))throw new Error('システム列更新の読み返しが不一致');
     }
-    function updateRow(key,patch){return patchRow(key,patch,false);}
-    function updateEditable(key,patch){return patchRow(key,patch,true);}
     function readHistory(offset,limit,runId){const all=records('History').filter(r=>!runId||r.RunId===runId).reverse();return {items:all.slice(offset,offset+limit),total:all.length};}
     function ensureKeys(uuid) {
       const raw=table('Filters'),s=sheet('Filters');
@@ -161,6 +159,12 @@ var GFMSheets = (function () {
       append('Backup',[[id,at,'COMPLETE','',1,1,JSON.stringify({count:state.filters.length}),hash]]);
       decodeSnapshot(id,true);return {id,hash,count:state.filters.length};
     }
+    function readScope(id){return JSON.parse(assemble(records('Backup').filter(r=>r.SnapshotId===id&&r.Kind==='SCOPE')));}
+    function writeScope(id,keys,at){
+      const all=records('Backup').filter(r=>r.SnapshotId===id);
+      if(all.filter(r=>r.Kind==='COMPLETE').length!==1||all.some(r=>r.Kind==='SCOPE'))throw new Error('選択対象の保存先が不完全か保存済みです');
+      const text=JSON.stringify(keys);append('Backup',chunkRows(id,at,'SCOPE','',text));if(C.stable(readScope(id))!==C.stable(keys))throw new Error('選択対象の読み返しが一致しません');
+    }
     function clipped(value){const s=stringify(value);return s.length<=limit?s:s.slice(0,limit-100)+' … [表示を省略。原本はBackupを参照]';}
     function writeDiff(runId,entries) {
       const s=sheet('Diff');if(s.getLastRow()>1)s.getRange(2,1,s.getLastRow()-1,schemas.Diff.length).clearContent();
@@ -170,7 +174,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {setup,readRows,appendRows,updateRow,updateEditable,readHistory,ensureKeys,writeDiff,history,backup,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {setup,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};

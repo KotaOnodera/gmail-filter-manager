@@ -14,16 +14,24 @@
   </header>
   <div class="app-layout">
     <nav class="navigation" aria-label="メインメニュー">
-      <button type="button" data-page="filters" aria-current="page"><span aria-hidden="true">☰</span>フィルター</button>
-      <button type="button" data-page="preview"><span aria-hidden="true">✓</span>変更確認</button>
-      <button type="button" data-page="history"><span aria-hidden="true">◷</span>履歴</button>
+      <button type="button" data-page="home" aria-current="page"><span aria-hidden="true">▶</span>操作</button>
+      <button type="button" data-page="history"><span aria-hidden="true">◷</span>実行ログ</button>
     </nav>
     <div class="workspace">
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="error" class="notice error" role="alert" tabindex="-1" hidden></div>
       <div id="busy" class="busy" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span>処理しています。画面を閉じずにお待ちください。</div>
-      <main id="main" tabindex="-1"><h1>読み込んでいます</h1><p>Googleアカウントとフィルターを確認しています。</p></main>
-      <footer>Gmailフィルター管理<span>保存した変更は、確認後にGmailへ反映されます。</span></footer>
+      <main id="main" tabindex="-1">
+        <h1>フィルターを実行</h1>
+        <p class="lead">必要な操作を選んでください。</p>
+        <div class="operation-grid">
+          <section class="operation-card"><h2>インポート</h2><p>Gmailの既存設定を取り込みます。</p><button type="button" class="button secondary block" data-command="import" aria-label="インポートする">実行</button></section>
+          <section class="operation-card"><h2>全部適用</h2><p>スプシの差分をまとめて反映します。</p><button type="button" class="button block" data-command="all" aria-label="全部適用へ">確認</button></section>
+          <section class="operation-card"><h2>選んで部分適用</h2><p>選んだフィルターだけ反映します。</p><button type="button" class="button secondary block" data-command="selected" aria-label="フィルターを選ぶ">選ぶ</button></section>
+          <section class="operation-card"><h2>実行ログ</h2><p>実行結果やエラーを確認します。</p><button type="button" class="button secondary block" data-command="history" aria-label="実行ログを開く">開く</button></section>
+        </div>
+      </main>
+      <footer>Gmailフィルター管理<span>適用前に変更内容を確認できます。</span></footer>
     </div>
   </div>
   <?!= client ?>

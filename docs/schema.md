@@ -74,3 +74,7 @@ OperationはCREATE、REPLACE、DELETE、NOOP、ERROR、REMOTE_ONLY。Diffのセ�
 分割レコードには同一のHash、1始まりのPart、総数Partsを記録します。全パートとハッシュを照合して結合します。空メールボックスでもCONTEXT・MANIFEST・COMPLETEを保存します。過去スナップショットは上書きしません。COMPLETEがないものは復旧元に使いません。Backupが10万行を超えたら容量警告を表示します。
 
 DocumentPropertiesのGFM:preview、GFM:prepared、GFM:pending、GFM:cleanup、GFM:importCompleteは別の永続管理状態です。キャッシュは使いません。API前にジャーナルを読み返し確認して保存し、応答後に段階を更新します。通常の操作で手動削除しないでください。
+
+## 選択適用の記録
+
+BackupのKind=SCOPEは、同じSnapshotIdのバックアップに結び付いた、選択RuleKeyのJSON配列です。他のバックアップと同様にPart/Parts/Hashで分割・検証し、一度保存した集合を上書きしません。承認状態は集合そのものを持たず、そのハッシュと件数を保持します。

@@ -9,7 +9,7 @@ const clone=C.clone;
 function harness(options={}) {
   const data={filters:clone(options.filters||[base()]),labels:clone(labels),forwarding:[{forwardingEmail:'dest@example.com',verificationStatus:'accepted'}]};
   const rows=clone(options.rows===undefined?[C.importFilter(base(),labels,key)]:options.rows);
-  const props={},backups={},history=[],writes=[],diffs=[];
+  const props={},backups={},scopes={},history=[],writes=[],diffs=[];
   let serial=0,time=0;
   const faults={};
   const fail=name=>{if(faults[name]){const f=faults[name];delete faults[name];if(typeof f==='function')f();else throw new Error(name+' failed');}};
@@ -21,6 +21,8 @@ function harness(options={}) {
     writeDiff(run,entries){diffs.push({run,entries:clone(entries)});},
     backup(state,id,date){fail('backup');backups[id]=clone(state);return {id,hash:hash(C.stable(C.remote(state))),count:state.filters.length};},
     readBackup(id){if(!backups[id])throw new Error('snapshot missing');return clone(backups[id]);},
+    writeScope(id,keys){if(scopes[id])throw new Error('scope exists');scopes[id]=clone(keys);},
+    readScope(id){if(!scopes[id])throw new Error('scope missing');return clone(scopes[id]);},
     history(e){fail('history');history.push(clone(e));}
   };
   const gmail={
@@ -30,6 +32,6 @@ function harness(options={}) {
   };
   const state={get(k){return props[k]===undefined?null:clone(props[k]);},set(k,v){fail('state:'+k);props[k]=clone(v);},remove(k){delete props[k];}};
   const deps={store,gmail,state,hash,uuid:()=>crypto.randomUUID(),now:()=>time,actor:()=>'',notify:()=>{}};
-  return {deps,data,rows,props,backups,history,writes,diffs,faults,tick(ms){time+=ms;},key};
+  return {deps,data,rows,props,backups,scopes,history,writes,diffs,faults,tick(ms){time+=ms;},key};
 }
 module.exports={harness,key,labels,base,hash};

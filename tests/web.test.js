@@ -2,17 +2,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),C=require('../src/Core'),S=require('../src/Sync'),{harness,key,hash}=require('./helpers');
 const W=fs.existsSync(path.join(__dirname,'../src/Web.js'))?require('../src/Web'):{};
 function fixture(){const h=harness();h.deps.store.updateEditable=(k,p)=>Object.assign(h.rows.find(r=>r.RuleKey===k),p);h.deps.store.readHistory=(offset,limit)=>({items:h.history.slice().reverse().slice(offset,offset+limit),total:h.history.length});const d={...h.deps,bookId:'book',withLock:fn=>fn(),controller:S.create(h.deps),version:r=>hash(C.stable(C.config([r])))};return {...h,web:W.create(d)};}
-test('web save is versioned, preserves tri-state/zero/literal and never mutates Gmail',()=>{
-  const f=fixture(),before=f.web.dispatch('detail',{key});
-  const result=f.web.dispatch('save',{key,version:before.version,patch:{NameOrNote:'=1+2',HasAttachment:'FALSE',SizeBytes:'0',SizeComparison:'larger'}});
-  assert.equal(result.row.NameOrNote,'=1+2');assert.equal(result.row.HasAttachment,'FALSE');assert.equal(result.row.SizeBytes,'0');assert.equal(result.row.GmailFilterId,undefined);assert.equal(f.rows[0].GmailFilterId,'old');assert.equal(f.writes.length,0);
-  assert.throws(()=>f.web.dispatch('save',{key,version:before.version,patch:{Subject:'lost edit'}}),/変更されています/);
-  assert.throws(()=>f.web.dispatch('save',{key,version:result.version,patch:{GmailFilterId:'bad'}}),/編集できません/);
-});
-test('new filter save can be retried without duplicate rows',()=>{
-  const f=fixture(),draft=f.web.dispatch('new',{}),input={key:draft.row.RuleKey,version:draft.version,patch:{Status:'有効',From:'new@example.com',Archive:'TRUE'}};
-  f.web.dispatch('save',input);f.web.dispatch('save',input);assert.equal(f.rows.length,2);assert.equal(f.writes.length,0);
-});
 test('web requires server approval token, rejects stale state and consumes one successful apply',()=>{
   const f=fixture();f.rows[0].Subject='changed';const pv=f.web.dispatch('preview',{});const prepared=f.web.dispatch('prepare',{runId:pv.runId});
   assert.ok(prepared.token);assert.equal(f.writes.length,0);
@@ -25,23 +14,27 @@ test('expired web confirmation cannot apply',()=>{
   const f=fixture();f.rows[0].Subject='changed';const pv=f.web.dispatch('preview',{});const p=f.web.dispatch('prepare',{runId:pv.runId});f.tick(16*60*1000);assert.throws(()=>f.web.dispatch('apply',{token:p.token}),/期限/);assert.equal(f.writes.length,0);
 });
 test('another preview cannot be prepared using an older displayed RunId',()=>{const f=fixture(),pv=f.web.dispatch('preview',{});f.web.dispatch('preview',{});assert.throws(()=>f.web.dispatch('prepare',{runId:pv.runId}),/再確認/);});
-test('web import needs matching confirmation; list omits original system JSON',()=>{
-  const f=fixture();const list=f.web.dispatch('list',{});assert.equal(list.total,1);assert.equal(list.items[0].OriginalJson,undefined);
+test('web import needs matching confirmation',()=>{
+  const f=fixture();
   assert.throws(()=>f.web.dispatch('import',{token:'forged'}),/確認/);const c=f.web.dispatch('importCheck',{});assert.equal(f.web.dispatch('import',{token:c.token}).count,0);assert.equal(f.writes.length,0);
   assert.throws(()=>f.web.dispatch('unknown',{}),/操作/);
-});
-test('opening more than twenty drafts does not block new creation, and evicted requests cannot create',()=>{
-  const f=fixture(),first=f.web.dispatch('new',{});let latest;for(let i=0;i<25;i++)latest=f.web.dispatch('new',{});
-  assert.throws(()=>f.web.dispatch('save',{key:first.row.RuleKey,version:first.version,patch:{From:'old-draft@example.com'}}),/再読込|新規/);
-  f.web.dispatch('save',{key:latest.row.RuleKey,version:latest.version,patch:{From:'latest@example.com'}});assert.equal(f.rows.length,2);
-});
-test('more than twenty saved new rows do not exhaust creation and old retry cannot duplicate',()=>{
-  const f=fixture();let old;for(let i=0;i<22;i++){const d=f.web.dispatch('new',{}),input={key:d.row.RuleKey,version:d.version,patch:{From:'new-'+i+'@example.com'}};if(!old)old=input;f.web.dispatch('save',input);}
-  assert.equal(f.rows.length,23);assert.throws(()=>f.web.dispatch('save',old),/変更されています/);assert.equal(f.rows.length,23);
 });
 test('unacknowledged apply result survives reload and can be read by its RunId without another mutation',()=>{
   const f=fixture();f.rows[0].Subject='updated';const pv=f.web.dispatch('preview',{}),p=f.web.dispatch('prepare',{runId:pv.runId});const result=f.web.dispatch('apply',{token:p.token});
   assert.equal(f.web.dispatch('boot',{}).unseenOutcome.runId,p.runId);assert.deepEqual(f.web.dispatch('outcome',{runId:p.runId}),result);assert.equal(f.writes.length,2);
   assert.throws(()=>f.web.dispatch('outcome',{runId:'unrelated'}),/見つかりません/);
   f.web.dispatch('acknowledgeOutcome',{runId:p.runId});assert.equal(f.web.dispatch('boot',{}).unseenOutcome,null);assert.equal(f.writes.length,2);
+});
+
+test('boot and history remain available without Gmail or Filters reads',()=>{
+  const f=fixture();f.deps.gmail.read=()=>{throw Error('Gmail must not be read on startup');};f.deps.store.readRows=()=>{throw Error('Filters must not be read on startup');};
+  assert.equal(f.web.dispatch('boot',{}).unseenOutcome,null);assert.equal(f.web.dispatch('history',{}).items.length,0);assert.equal(f.writes.length,0);
+});
+test('removed Web editing and listing commands are rejected without mutations',()=>{
+  const f=fixture();for(const action of ['new','save','detail','list'])assert.throws(()=>f.web.dispatch(action,{key}),/対応していない操作/);assert.equal(f.rows.length,1);assert.equal(f.writes.length,0);
+});
+test('Web preparation returns only the server-validated selected entries',()=>{
+  const f=fixture(),other='22222222-2222-4222-8222-222222222222';const second={id:'other',criteria:{from:'other@example.com'},action:{}};f.data.filters.push(second);f.rows.push(C.importFilter(second,f.data.labels,other));f.rows[0].Subject='one';f.rows[1].Subject='two';
+  const pv=f.web.dispatch('preview',{}),p=f.web.dispatch('prepare',{runId:pv.runId,keys:[key]});assert.equal(p.summary.REPLACE,1);assert.deepEqual(p.entries.map(e=>e.ruleKey),[key]);
+  const result=f.web.dispatch('apply',{token:p.token,keys:[key,other]});assert.equal(result.status,'OK');assert.equal(result.remaining,1);assert.equal(f.writes.length,2);
 });

@@ -119,7 +119,8 @@ var GFMCore = (function () {
   function remote(state) {
     return {filters:state.filters.map(f=>({id:f.id,...normalize(f)})).sort((a,b)=>a.id.localeCompare(b.id)),labels:state.labels.map(l=>({id:l.id,name:l.name,type:l.type})).sort((a,b)=>a.id.localeCompare(b.id)),forwarding:state.forwarding.slice().sort((a,b)=>stable(a).localeCompare(stable(b)))};
   }
-  function plan(rows,state) {
+  function plan(rows,state,selectedKeys) {
+    const selected=selectedKeys?new Set(selectedKeys):null;
     const keyCounts={},idCounts={},claimed=new Set(),reserved=new Set(rows.map(r=>r.GmailFilterId).filter(Boolean));
     rows.forEach(r=>{keyCounts[r.RuleKey]=(keyCounts[r.RuleKey]||0)+1;if(r.GmailFilterId)idCounts[r.GmailFilterId]=(idCounts[r.GmailFilterId]||0)+1;});
     let capacity=state.filters.length;
@@ -151,7 +152,7 @@ var GFMCore = (function () {
         if(['CREATE','REPLACE'].includes(e.operation)){
           if(converted.unknown.length)throw new Error('未認識フィールドを再作成できません: '+converted.unknown.join(', '));
           if(capacity>=1000)throw new Error('フィルター上限1000件: 削除先行は禁止');
-          if(e.operation==='CREATE')capacity++;
+          if(e.operation==='CREATE'&&(!selected||selected.has(r.RuleKey)))capacity++;
           if((e.after.action.addLabelIds||[]).includes('TRASH'))e.risks.push('TRASH');
           if(e.after.action.forward)e.risks.push('FORWARD');
           if(e.operation==='REPLACE')e.warnings.push('更新は非原子的です。新旧フィルターが一時的に同時に有効になり、転送等の副作用が重複する場合があります');
