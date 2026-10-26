@@ -75,7 +75,7 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 3. 初回のGoogle認証でインストーラー用権限を確認する。
 4. 実行ログのSpreadsheet:のURLを開く。
 
-この関数は専用スプレッドシートを作成し、4シートを準備し、Apps Script APIのparentId指定で紐付けたGASを作成します。同梱ソースとマニフェストを配置後、読み返して一致を確認します。[プロジェクト管理API](https://developers.google.com/apps-script/api/how-tos/manage-projects)
+この関数は専用スプレッドシートを作成し、5シートを準備し、Apps Script APIのparentId指定で紐付けたGASを作成します。同梱ソースとマニフェストを配置後、読み返して一致を確認します。[プロジェクト管理API](https://developers.google.com/apps-script/api/how-tos/manage-projects)
 
 最初の空シートはFiltersとして再利用します。既存データや他のファイルは消しません。Gmailへの接続・取り込み・変更はこの段階では行いません。
 
@@ -98,7 +98,7 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 | 対象 | スコープ | 用途 |
 | --- | --- | --- |
 | インストーラー | drive | 指定フォルダの情報・権限確認、作成したファイルの親フォルダ変更 |
-| インストーラー | spreadsheets | ファイル作成・4シート準備 |
+| インストーラー | spreadsheets | ファイル作成・5シート準備 |
 | インストーラー | script.projects | 紐付けGAS作成・ソース配置・検証・更新 |
 | インストーラー | script.external_request | Apps Script APIとGoogle Drive APIへの通信 |
 | インストーラー | userinfo.email | 初回実行者との照合 |

@@ -4,7 +4,7 @@ var GFMCore = (function () {
   const criteriaFields = {From:'from',To:'to',Subject:'subject',Query:'query',NegatedQuery:'negatedQuery',HasAttachment:'hasAttachment',ExcludeChats:'excludeChats',SizeBytes:'size',SizeComparison:'sizeComparison'};
   const actionFlags = {Archive:['removeLabelIds','INBOX'],MarkRead:['removeLabelIds','UNREAD'],NeverSpam:['removeLabelIds','SPAM'],MarkImportant:['addLabelIds','IMPORTANT'],NeverImportant:['removeLabelIds','IMPORTANT'],Star:['addLabelIds','STARRED'],MoveToTrash:['addLabelIds','TRASH']};
   const editable = ['Status','NameOrNote',...Object.keys(criteriaFields),'UserLabel',...Object.keys(actionFlags),'ForwardTo','AdditionalAddLabelIds','AdditionalRemoveLabelIds'];
-  const columns = ['RuleKey',...editable,'GmailFilterId','SyncedAt','SyncedHash','Result','OriginalJson','OriginalRowJson'];
+  const columns = ['RuleKey',...editable,'GmailFilterId','SyncedAt','SyncedHash','Result','OriginalJson','OriginalRowJson','UserLabelRef'];
   const own = (o,k) => Object.prototype.hasOwnProperty.call(o,k);
   const blank = v => v === '' || v === undefined || v === null;
   const clone = v => JSON.parse(JSON.stringify(v));
@@ -90,7 +90,7 @@ var GFMCore = (function () {
       user=matches[0].id;
     }
     const actionCols=[...Object.keys(actionFlags),'UserLabel','AdditionalAddLabelIds','AdditionalRemoveLabelIds'];
-    if(actionCols.some(changed)) {
+    if(actionCols.some(changed)||row.UserLabelRef) {
       f.action.addLabelIds=[...extraAdd,...(user?[user]:[])];f.action.removeLabelIds=[...extraRemove];
       Object.keys(actionFlags).forEach(col=>{if(flags[col]){const [list,id]=actionFlags[col];f.action[list].push(id);}});
       ['addLabelIds','removeLabelIds'].forEach(k=>{f.action[k]=[...new Set(f.action[k])];if(!f.action[k].length)delete f.action[k];});
@@ -114,7 +114,7 @@ var GFMCore = (function () {
     return blank(v)?'':v;
   }
   function config(rows) {
-    return rows.map(r=>Object.fromEntries(['RuleKey',...editable,'GmailFilterId','OriginalJson','OriginalRowJson'].map(k=>[k,blank(r[k])?'':r[k]]))).sort((a,b)=>String(a.RuleKey).localeCompare(String(b.RuleKey)));
+    return rows.map(r=>Object.fromEntries(['RuleKey',...editable,'GmailFilterId','OriginalJson','OriginalRowJson','UserLabelRef'].map(k=>[k,blank(r[k])?'':r[k]]))).sort((a,b)=>String(a.RuleKey).localeCompare(String(b.RuleKey)));
   }
   function remote(state) {
     return {filters:state.filters.map(f=>({id:f.id,...normalize(f)})).sort((a,b)=>a.id.localeCompare(b.id)),labels:state.labels.map(l=>({id:l.id,name:l.name,type:l.type})).sort((a,b)=>a.id.localeCompare(b.id)),forwarding:state.forwarding.slice().sort((a,b)=>stable(a).localeCompare(stable(b)))};

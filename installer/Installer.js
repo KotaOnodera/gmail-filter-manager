@@ -10,7 +10,7 @@ var GFMInstaller = (function () {
       return d.hash(C.stable(normalized));
     }
     function payload(){
-      const names=['Core','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web','Index','Styles','Client','appsscript'];
+      const names=['Core','Labels','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web','Index','Styles','Client','appsscript'];
       if(!Array.isArray(d.files)||d.files.length!==names.length||names.some(name=>d.files.filter(f=>f.name===name).length!==1)||d.files.some(f=>typeof f.source!=='string'||f.type!==(f.name==='appsscript'?'JSON':['Index','Styles','Client'].includes(f.name)?'HTML':'SERVER_JS')))throw new Error('同梱ソースが不完全です。npm run buildを再実行してください');
       return {files:C.clone(d.files),hash:fingerprint(d.files)};
     }

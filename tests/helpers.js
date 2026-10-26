@@ -9,11 +9,18 @@ const clone=C.clone;
 function harness(options={}) {
   const data={filters:clone(options.filters||[base()]),labels:clone(labels),forwarding:[{forwardingEmail:'dest@example.com',verificationStatus:'accepted'}]};
   const rows=clone(options.rows===undefined?[C.importFilter(base(),labels,key)]:options.rows);
+  const labelRows=clone(options.labelRows||[]);
   const props={},backups={},scopes={},history=[],writes=[],diffs=[];
   let serial=0,time=0;
   const faults={};
   const fail=name=>{if(faults[name]){const f=faults[name];delete faults[name];if(typeof f==='function')f();else throw new Error(name+' failed');}};
   const store={
+    ensureLabelSchema(){},
+    readLabelRows(){fail('readLabelRows');return clone(labelRows);},
+    ensureLabelKeys(uuid){labelRows.forEach(r=>{if(!r.LabelKey)r.LabelKey=uuid();});},
+    appendLabelRows(rs){labelRows.push(...clone(rs));},
+    updateLabelRow(k,patch){fail('updateLabelRow');const found=labelRows.filter(r=>r.LabelKey===k);if(found.length!==1)throw Error('LabelKey missing/duplicate');Object.assign(found[0],clone(patch));},
+    setFilterLabel(k,expected,ref){fail('setFilterLabel');const found=rows.filter(r=>r.RuleKey===k);if(found.length!==1||C.stable(C.config(found))!==C.stable(C.config([expected])))throw Error('filter changed');found[0].UserLabelRef=ref?JSON.stringify(ref):'';if(ref)found[0].UserLabel=ref.name;},
     ensureKeys(uuid){rows.forEach(r=>{if(!r.RuleKey)r.RuleKey=uuid();});},
     readRows(){fail('readRows');return clone(rows);},
     appendRows(rs){for(const r of rs){fail('appendRows');rows.push(clone(r));}},
@@ -27,11 +34,13 @@ function harness(options={}) {
   };
   const gmail={
     read(){fail('read');return clone(data);},
+    createLabel(name){fail('createLabel');const result={id:'label-new-'+(++serial),name,type:'user'};data.labels.push(result);writes.push(['labelCreate',result.id]);fail('afterCreateLabel');return clone(result);},
+    renameLabel(id,name){fail('renameLabel');const found=data.labels.find(l=>l.id===id);if(!found)throw Error('label missing');found.name=name;writes.push(['labelRename',id]);fail('afterRenameLabel');return clone(found);},
     create(f){fail('create');const result={id:'new-'+(++serial),...clone(f)};data.filters.push(result);writes.push(['create',result.id]);fail('afterCreate');return clone(result);},
     delete(id){fail('delete');const i=data.filters.findIndex(f=>f.id===id);if(i<0)throw new Error('not found');data.filters.splice(i,1);writes.push(['delete',id]);fail('afterDelete');}
   };
   const state={get(k){return props[k]===undefined?null:clone(props[k]);},set(k,v){fail('state:'+k);props[k]=clone(v);},remove(k){delete props[k];}};
   const deps={store,gmail,state,hash,uuid:()=>crypto.randomUUID(),now:()=>time,actor:()=>'',notify:()=>{}};
-  return {deps,data,rows,props,backups,scopes,history,writes,diffs,faults,tick(ms){time+=ms;},key};
+  return {deps,data,rows,labelRows,props,backups,scopes,history,writes,diffs,faults,tick(ms){time+=ms;},key};
 }
 module.exports={harness,key,labels,base,hash};

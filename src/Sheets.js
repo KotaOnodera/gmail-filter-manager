@@ -3,6 +3,7 @@ var GFMSheets = (function () {
   const core=()=>typeof module!=='undefined'?require('./Core.js'):GFMCore;
   function schemasValue(){return {
     Filters:core().columns,
+    Labels:(typeof module!=='undefined'?require('./Labels'):GFMLabels).columns,
     Diff:['RunId','RuleKey','Operation','Before','After','Warnings','Risk','ValidationError'],
     History:['RunId','TimestampTokyo','Actor','Command','RuleKey','BeforeId','AfterId','Result','Error','SnapshotId','Verification','Risk'],
     Backup:['SnapshotId','CapturedAt','Kind','GmailFilterId','Part','Parts','Json','Hash']
@@ -45,7 +46,13 @@ var GFMSheets = (function () {
       const existing=s.getProtections(d.app.ProtectionType.RANGE).some(p=>p.getDescription()===description);
       if(!existing)s.getRange(1,col,s.getMaxRows(),count).protect().setDescription(description).setWarningOnly(true);
     }
+    function migrateFilterHeader() {
+      const s=d.book.getSheetByName('Filters');if(!s||!s.getLastRow())return;
+      const old=C.columns.slice(0,-1),actual=s.getRange(1,1,1,old.length).getValues()[0];
+      if(s.getLastColumn()===old.length&&actual.every((v,i)=>v===old[i])&&!s.getRange(1,1,1,old.length).getFormulas()[0].some(Boolean))write(s,1,C.columns.length,[['UserLabelRef']]);
+    }
     function setup() {
+      migrateFilterHeader();
       Object.keys(schemas).forEach(name=>{const s=d.book.getSheetByName(name);if(s&&s.getLastRow()>0)assertHeader(s,name);});
       Object.keys(schemas).forEach(name=>{
         const s=d.book.getSheetByName(name)||d.book.insertSheet(name);
@@ -54,16 +61,51 @@ var GFMSheets = (function () {
         s.getRange(1,1,1,schemas[name].length).setBackground('#17324d').setFontColor('#ffffff').setFontWeight('bold');
         s.getRange(2,1,s.getMaxRows()-1,schemas[name].length).setNumberFormat('@').setWrapStrategy(d.app.WrapStrategy.CLIP);
         if(name==='Filters') {
-          const system=['RuleKey','GmailFilterId','SyncedAt','SyncedHash','Result','OriginalJson','OriginalRowJson'];
+          const system=['RuleKey','GmailFilterId','SyncedAt','SyncedHash','Result','OriginalJson','OriginalRowJson','UserLabelRef'];
           system.forEach(k=>{const col=C.columns.indexOf(k)+1;s.getRange(2,col,s.getMaxRows()-1,1).setBackground('#eef2f6');protect(s,col,1,'GFM:Filters:'+k);});
-          s.hideColumns(C.columns.indexOf('OriginalJson')+1,2);
+          s.hideColumns(C.columns.indexOf('OriginalJson')+1,3);
           const validation=(col,values)=>s.getRange(2,C.columns.indexOf(col)+1,s.getMaxRows()-1,1).setDataValidation(d.app.newDataValidation().requireValueInList(values,true).setAllowInvalid(false).build());
           validation('Status',['有効','無効','削除予定']);validation('SizeComparison',['larger','smaller','unspecified']);
           ['HasAttachment','ExcludeChats',...Object.keys(C.actionFlags)].forEach(k=>validation(k,['TRUE','FALSE']));
+        } else if(name==='Labels') {
+          ['LabelKey','GmailLabelId','SyncedName','SyncedAt','Result'].forEach(k=>{const col=schemas.Labels.indexOf(k)+1;s.getRange(2,col,s.getMaxRows()-1,1).setBackground('#eef2f6');protect(s,col,1,'GFM:Labels:'+k);});
         } else protect(s,1,schemas[name].length,'GFM:'+name);
         if(name==='Diff'&&!s.getFilter())s.getRange(1,1,s.getMaxRows(),schemas[name].length).createFilter();
       });
+      const labelSheet=sheet('Labels'),filterSheet=sheet('Filters');
+      filterSheet.getRange(2,C.columns.indexOf('UserLabel')+1,filterSheet.getMaxRows()-1,1).setDataValidation(d.app.newDataValidation().requireValueInRange(labelSheet.getRange(2,2,labelSheet.getMaxRows()-1,1),true).setAllowInvalid(true).build());
       d.app.flush();
+    }
+    function ensureLabelSchema(){
+      const f=d.book.getSheetByName('Filters');
+      if(!d.book.getSheetByName('Labels')||!f||f.getLastColumn()!==C.columns.length)setup();
+      assertHeader(sheet('Labels'),'Labels');assertHeader(sheet('Filters'),'Filters');
+    }
+    function labelAnchors(){
+      const s=sheet('Labels'),raw=table('Labels'),anchors=s.createDeveloperMetadataFinder().withKey('GFM_LABEL').find();
+      raw.forEach((r,i)=>{if(!r[0]||!token(r[0]))return;const found=anchors.filter(m=>m.getValue()===token(r[0]));if(found.length>1)throw Error('LabelKeyの行メタデータが重複しています');if(!found.length)s.getRange((i+2)+':'+(i+2)).addDeveloperMetadata('GFM_LABEL',token(r[0]),d.app.DeveloperMetadataVisibility.DOCUMENT);});d.app.flush();
+    }
+    function readLabelRows(){
+      const raw=table('Labels');sheet('Labels').createDeveloperMetadataFinder().withKey('GFM_LABEL').find().forEach(m=>{const row=m.getLocation().getRow(),i=row?row.getRow()-2:-1;if(i<0||!raw[i]||token(raw[i][0])!==m.getValue())throw Error('LabelKeyと行メタデータが不一致です');});
+      return raw.filter(r=>r.some(v=>v!=='')).map(r=>Object.fromEntries(schemas.Labels.map((k,i)=>[k,r[i]])));
+    }
+    function ensureLabelKeys(uuid){const s=sheet('Labels');table('Labels').forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();labelAnchors();readLabelRows();}
+    function appendLabelRows(rows){append('Labels',rows.map(r=>schemas.Labels.map(k=>r[k])));labelAnchors();const actual=readLabelRows();for(const r of rows){const found=actual.filter(a=>a.LabelKey===r.LabelKey);if(found.length!==1||schemas.Labels.some(k=>String(found[0][k])!==stringify(r[k])))throw Error('Labels書き込みの読み返しが不一致');}}
+    function atomicFields(name,metadata,key,patch){
+      const cols=schemas[name],matches=sheet(name).createDeveloperMetadataFinder().withKey(metadata).withValue(token(key)).find();if(matches.length!==1)throw Error(name+'の行メタデータが不明/重複しています');
+      const values=Array(cols.length).fill(null);for(const k of Object.keys(patch)){if(!cols.includes(k))throw Error('不正な列');const v=stringify(patch[k]);if(v.length>limit)throw Error('セルが長すぎます');values[cols.indexOf(k)]=v;}
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
+      if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw Error(name+'の行更新が不一致です');d.app.flush();
+    }
+    function updateLabelRow(key,patch){
+      if(Object.keys(patch).some(k=>!['GmailLabelId','SyncedName','SyncedAt','Result'].includes(k)))throw Error('ラベルのシステム列以外は更新できません');
+      if(readLabelRows().filter(r=>r.LabelKey===key).length!==1)throw Error('LabelKeyが不明/重複しています');atomicFields('Labels','GFM_LABEL',key,patch);
+      const r=readLabelRows().find(r=>r.LabelKey===key);if(!r||Object.keys(patch).some(k=>String(r[k])!==stringify(patch[k])))throw Error('ラベル更新の読み返しが不一致');
+    }
+    function setFilterLabel(key,expected,ref){
+      const actual=readRows().filter(r=>r.RuleKey===key);if(actual.length!==1||C.stable(C.config(actual))!==C.stable(C.config([expected])))throw Error('フィルターが変更されています。参照更新を停止しました');
+      const patch={UserLabelRef:ref?JSON.stringify(ref):''};if(ref)patch.UserLabel=ref.name;
+      atomicFields('Filters','GFM',key,patch);const found=readRows().find(r=>r.RuleKey===key);if(!found||Object.keys(patch).some(k=>String(found[k])!==patch[k]))throw Error('参照名の読み返しが一致しません');
     }
     function chunkRows(id,at,kind,filterId,text) {
       const parts=Math.max(1,Math.ceil(text.length/limit)),hash=d.hash(text);
@@ -202,7 +244,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {writeMessageData,readMessageData,setup,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};

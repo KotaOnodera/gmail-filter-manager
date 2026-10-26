@@ -4,9 +4,9 @@ const C=require('../src/Core.js');const {hash,base,labels,key}=require('./helper
 const load=f=>fs.existsSync(path.join(__dirname,'../src/'+f+'.js'))?require('../src/'+f+'.js'):{};
 const Sheets=load('Sheets'),GmailAdapter=load('Gmail'),Menu=load('Menu');
 function env(){const f=fakeSheets();return {...f,store:Sheets.create({...f,hash,uuid:()=>crypto.randomUUID()})};}
-test('setup creates exactly four schemas and is idempotent without data loss/protection duplicates',()=>{
+test('setup creates exactly five schemas and is idempotent without data loss/protection duplicates',()=>{
   const e=env();e.store.setup();e.store.appendRows([C.importFilter(base(),labels,key)]);const before=C.clone(e.sheets.get('Filters').values);const n=e.sheets.get('Filters').protections.length;
-  e.store.setup();assert.equal(e.sheets.size,4);assert.deepEqual(e.sheets.get('Filters').values,before);assert.equal(e.sheets.get('Filters').protections.length,n);
+  e.store.setup();assert.equal(e.sheets.size,5);assert.deepEqual(e.sheets.get('Filters').values,before);assert.equal(e.sheets.get('Filters').protections.length,n);
 });
 test('schema mismatch and formulas fail closed without erasing user data',()=>{
   const e=env();e.store.setup();e.sheets.get('Filters').values[0][0]='Renamed';

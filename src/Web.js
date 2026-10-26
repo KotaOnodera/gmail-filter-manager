@@ -24,7 +24,7 @@ var GFMWeb = (function () {
           d.state.set('webMessageReceipt',{token:input.token,runId:c.ticket.runId,actor:d.actor(),bookId:d.bookId});
           return d.messages.apply(c.ticket);
         }
-        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,token:confirmation('webImport',ticket)};}
+        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,labelCount:ticket.labelCount,labelTotal:ticket.labelTotal,token:confirmation('webImport',ticket)};}
         if(action==='import'){const c=checked('webImport',input.token);d.state.remove('webImport');return d.controller.importAll(true,c.ticket);}
         if(action==='preview'){d.state.remove('webApproval');const result=d.controller.preview();return result;}
         if(action==='prepare'){

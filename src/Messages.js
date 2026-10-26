@@ -33,13 +33,19 @@ var GFMMessages = (function () {
     return {action:{addLabelIds:add,removeLabelIds:remove},ignored};
   }
   function create(d) {
+    const L=typeof module!=='undefined'?require('./Labels'):GFMLabels;
     const C=core(),saveData=(runId,v)=>d.store.writeMessageData(runId,v),readData=p=>d.store.readMessageData(p);
     const maxSteps=d.messageMaxSteps||5,batchSize=Math.min(100,d.messageBatchSize||100),maxMillis=d.messageMaxMillis||20000;
     function list(before) {
-      const rows=d.store.readRows(),remote=d.gmail.read();before=before||Math.floor(d.now()/1000);
+      d.store.ensureLabelSchema();
+      const original=d.store.readRows(),remote=d.gmail.read(),labelRows=d.store.readLabelRows();before=before||Math.floor(d.now()/1000);
+      const labelPlan=L.plan(labelRows,remote.labels),resolved=L.resolve(original,labelRows,labelPlan.labels,remote.labels),rows=resolved.rows;
       const entries=rows.filter(r=>r.Status==='有効').map(r=>{
         const entry={key:r.RuleKey,title:r.NameOrNote||r.From||r.Subject||r.Query||r.RuleKey,errors:[],ignored:[],eligible:false};
         try {
+          if(resolved.errors[r.RuleKey])throw new Error(resolved.errors[r.RuleKey]);
+          const ref=resolved.refs[r.RuleKey],dependency=ref&&labelPlan.entries.find(e=>e.labelKey===ref.key);
+          if(dependency&&(dependency.operation!=='NOOP'||dependency.errors.length))throw new Error('先にラベル設定をGmailへ反映してください');
           if(!/^[\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12}$/i.test(r.RuleKey)||rows.filter(x=>x.RuleKey===r.RuleKey).length!==1)throw new Error('RuleKeyが不正または重複しています');
           const filter=C.toFilter(r,remote).filter;Object.assign(entry,actions(filter.action,remote.labels),{filter,query:query(filter.criteria,before)});
           entry.eligible=!!(entry.action.addLabelIds.length||entry.action.removeLabelIds.length);

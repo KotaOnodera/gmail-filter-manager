@@ -26,7 +26,7 @@ function fakeSheets(){
     getProtections(){return this.protections;}getFilter(){return this.filter;}setFrozenRows(){}setColumnWidths(){}hideColumns(){}activate(){events.push('activate:'+this.name);}
   }
   const book={getId:()=>'book',getSheetByName:n=>sheets.get(n)||null,insertSheet(n){const s=new Sheet(n);sheets.set(n,s);return s;},getSheets:()=>[...sheets.values()],toast:m=>events.push(m)};
-  const app={newRichTextValue(){let text;return {setText(t){text=t;return this;},build(){return {getText:()=>text};}};},newDataValidation(){return {requireValueInList(){return this;},setAllowInvalid(){return this;},build(){return {};}};},flush(){events.push('flush');},ProtectionType:{RANGE:'RANGE'},WrapStrategy:{CLIP:'CLIP'}};
+  const app={newRichTextValue(){let text;return {setText(t){text=t;return this;},build(){return {getText:()=>text};}};},newDataValidation(){return {requireValueInList(){return this;},requireValueInRange(){return this;},setAllowInvalid(){return this;},build(){return {};}};},flush(){events.push('flush');},ProtectionType:{RANGE:'RANGE'},WrapStrategy:{CLIP:'CLIP'}};
   app.DeveloperMetadataVisibility={DOCUMENT:'DOCUMENT'};
   const api={Spreadsheets:{Values:{batchUpdateByDataFilter(body){if(api.beforeAtomicWrite)api.beforeAtomicWrite();let n=0,cells=0;for(const entry of body.data){const id=entry.dataFilter.developerMetadataLookup.metadataId;for(const s of sheets.values()){const m=s.metadata.find(m=>m.id===id&&s.values.includes(m.ref));if(m){entry.values[0].forEach((v,i)=>{if(v!==null){m.ref[i]=v;cells++;}});n++;}}}return {totalUpdatedRows:n,totalUpdatedCells:cells,totalUpdatedSheets:n?1:0};}}}};
   return {book,app,api,sheets,events};

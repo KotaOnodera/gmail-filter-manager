@@ -4,7 +4,7 @@
   const $=id=>document.getElementById(id),main=$('main');
   const homeContent=[...main.childNodes].map(n=>n.cloneNode(true));
   const operations={CREATE:'追加',REPLACE:'更新',DELETE:'削除',NOOP:'変更なし',ERROR:'入力エラー',REMOTE_ONLY:'Gmail側のみ'};
-  const commands={IMPORT:'インポート',PREVIEW:'差分確認',APPLY:'フィルター適用',VERIFY:'適用後の検証',RECOVER:'復旧',WEB_SAVE:'旧画面での保存',MESSAGES:'既存メールの整理'};
+  const commands={IMPORT:'インポート',PREVIEW:'差分確認',APPLY:'フィルター適用',VERIFY:'適用後の検証',RECOVER:'復旧',LABEL_APPLY:'ラベル反映',LABEL_RECOVER:'ラベル復旧',WEB_SAVE:'旧画面での保存',MESSAGES:'既存メールの整理'};
   let working=false,userStarted=false,mode='ALL',preview=null,labels=[],selected=new Set(),pendingApplyRunId='',pendingMessageRunId='',savedMessageJob=null;
   function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined&&text!==null)el.textContent=String(text);if(cls)el.className=cls;return el;}
   function add(parent,...children){children.filter(Boolean).forEach(child=>parent.append(child));return parent;}
@@ -32,9 +32,9 @@
   }
   function stats(summary){const grid=node('div',null,'summary-grid');for(const k of ['CREATE','REPLACE','DELETE']){const box=node('div',null,'stat');add(box,node('strong',summary[k]||0),node('span',operations[k]));grid.append(box);}return grid;}
   function candidates(entries){return entries.filter(e=>!['NOOP','REMOTE_ONLY'].includes(e.operation)||(e.operation==='NOOP'&&e.matchedId));}
-  function titleOf(e){return e.after?.criteria?.from||e.before?.criteria?.from||e.after?.criteria?.subject||e.before?.criteria?.subject||e.after?.criteria?.query||e.before?.criteria?.query||'フィルターの変更';}
+  function titleOf(e){if(e.kind==='LABEL')return e.after?.name||e.before?.name||'ラベル';return e.after?.criteria?.from||e.before?.criteria?.from||e.after?.criteria?.subject||e.before?.criteria?.subject||e.after?.criteria?.query||e.before?.criteria?.query||'フィルターの変更';}
   function filterDefinition(filter){
-    const dl=node('dl',null,'definition');if(!filter){dl.append(node('dd','設定なし'));return dl;}
+    const dl=node('dl',null,'definition');if(!filter){dl.append(node('dd','設定なし'));return dl;}if(!filter.criteria&&!filter.action&&'name'in filter){add(dl,node('dt','ラベル名'),node('dd',filter.name));return dl;}
     const system={INBOX:'受信トレイ',UNREAD:'未読',SPAM:'迷惑メール',IMPORTANT:'重要',STARRED:'スター',TRASH:'ゴミ箱'};
     const labelText=ids=>ids.map(id=>system[id]||labels.find(l=>l.id===id)?.name||id).join('、');
     const names={from:'送信元',to:'宛先',subject:'件名',query:'含む条件',negatedQuery:'含まない条件',hasAttachment:'添付ファイルあり',excludeChats:'チャットを除外',size:'サイズ（バイト）',sizeComparison:'サイズの比較'};
@@ -46,20 +46,20 @@
   }
   function cards(entries,selectable=false,onSelection=()=>{}){
     const wrap=node('div');for(const e of candidates(entries)){
-      const card=node('article',null,'change-card');add(card,node('span',e.matchedId&&e.operation==='NOOP'?'IDの紐付け':operations[e.operation],'tag '+(e.operation==='DELETE'?'delete':'')),node('h2',titleOf(e)));
-      if(selectable&&e.ruleKey){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.checked=selected.has(e.ruleKey);check.dataset.ruleKey=e.ruleKey;add(label,check,node('span','この変更を選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.ruleKey);else selected.delete(e.ruleKey);for(const other of wrap.querySelectorAll('input[data-rule-key]'))other.checked=selected.has(other.dataset.ruleKey);onSelection();});card.append(label);}
+      const card=node('article',null,'change-card');add(card,node('span',e.matchedId&&e.operation==='NOOP'?'IDの紐付け':e.kind==='LABEL'?e.operation==='REPLACE'?'ラベル名変更':e.operation==='CREATE'?'ラベル作成':'ラベル・'+operations[e.operation]:operations[e.operation],'tag '+(e.operation==='DELETE'?'delete':'')),node('h2',titleOf(e)));
+      if(selectable&&e.ruleKey){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.checked=selected.has(e.ruleKey);check.dataset.ruleKey=e.ruleKey;add(label,check,node('span',e.kind==='LABEL'?'このラベル変更を選択':'この変更を選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.ruleKey);else selected.delete(e.ruleKey);for(const other of wrap.querySelectorAll('input[data-rule-key]'))other.checked=selected.has(other.dataset.ruleKey);onSelection();});card.append(label);}
       if(e.errors?.length)card.append(node('p',e.errors.join(' / '),'notice error'));if(e.warnings?.length)card.append(node('p',e.warnings.join(' / '),'muted'));if(e.risks?.length)card.append(node('p',e.risks.map(r=>r==='TRASH'?'ゴミ箱への移動を含みます':'転送を含みます').join(' / '),'notice warning'));
       const compare=node('div',null,'comparison'),before=node('div'),after=node('div',null,'after');add(before,node('h3','変更前'),filterDefinition(e.before));add(after,node('h3','変更後'),filterDefinition(e.after));add(compare,before,after);card.append(compare);
       const detail=node('details',null,'details');add(detail,node('summary','元データを確認'),node('pre',JSON.stringify({before:e.before,after:e.after},null,2),'json'));card.append(detail);wrap.append(card);
     }return wrap;
   }
   async function importCheck(){
-    const check=await rpc('importCheck');shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。既存の編集内容は維持します。','notice info'));
-    const actions=node('div',null,'actions');add(actions,button(check.count+'件をインポート',async()=>{const r=await rpc('import',{token:check.token});preview=null;shell('インポート完了',r.count+'件を追加し、全'+r.total+'件の取り込みを確認しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));},''),button('キャンセル',()=>showHome()));main.append(actions);
+    const check=await rpc('importCheck');shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターとラベルをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。ラベル全'+(check.labelTotal||0)+'件 / 未登録'+(check.labelCount||0)+'件。既存の編集内容は維持します。','notice info'));
+    const actions=node('div',null,'actions');add(actions,button('フィルター'+check.count+'件・ラベル'+(check.labelCount||0)+'件をインポート',async()=>{const r=await rpc('import',{token:check.token});preview=null;shell('インポート完了','フィルター'+r.count+'件・ラベル'+(r.labelCount||0)+'件を追加しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));},''),button('キャンセル',()=>showHome()));main.append(actions);
   }
   async function loadPreview(nextMode){mode=nextMode;selected=new Set();preview=await rpc('preview');labels=preview.labels||[];renderPreview();}
   function renderPreview(){
-    const partial=mode==='SELECTED',items=candidates(preview.entries);shell(partial?'適用するフィルターを選択':'全部適用の内容を確認',partial?'反映する変更にチェックを入れてください。選択していないフィルターは変更しません。':'スプレッドシートの変更内容を確認してから、まとめて適用します。');
+    const partial=mode==='SELECTED',items=candidates(preview.entries);shell(partial?'適用する変更を選択':'全部適用の内容を確認',partial?'反映するフィルター・ラベルを選んでください。選択したフィルターに必要なラベル変更も確認画面に追加します。':'フィルターとラベルを、スプレッドシートの状態に揃えます。Gmail側で変更されたラベル名も上書きします。');
     main.append(stats(preview.summary),node('p','変更なし '+preview.summary.NOOP+'件 / Gmail側のみ '+preview.summary.REMOTE_ONLY+'件（削除しません）','muted'));
     if(!items.length){main.append(node('p','適用が必要な変更はありません。','notice info'),button('操作に戻る',()=>showHome()));return;}
     if(preview.summary.ERROR)main.append(node('p','入力エラーが'+preview.summary.ERROR+'件あります。設定の修正はスプレッドシートで行ってください。選択適用では対象の内容を再検証します。','notice warning'));
@@ -71,8 +71,8 @@
   }
   async function prepare(){
     const p=await rpc('prepare',{runId:preview.runId,...(mode==='SELECTED'?{keys:[...selected]}:{})});labels=p.labels||labels;
-    shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'選択した'+p.selection.count+'件のフィルターだけを適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。確認の有効期限は15分です。','notice info'));
-    if(p.summary.REPLACE)main.append(node('p','更新時は、一時的に新旧のフィルターが同時に有効になります。転送などが重複する場合があります。','notice warning'));if(p.summary.TRASH||p.summary.FORWARD)main.append(node('p','ゴミ箱への移動 '+p.summary.TRASH+'件 / 転送 '+p.summary.FORWARD+'件を含みます。','notice warning'));
+    shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。確認の有効期限は15分です。','notice info'));
+    if(p.entries.some(e=>e.kind!=='LABEL'&&e.operation==='REPLACE'))main.append(node('p','更新時は、一時的に新旧のフィルターが同時に有効になります。転送などが重複する場合があります。','notice warning'));if(p.summary.TRASH||p.summary.FORWARD)main.append(node('p','ゴミ箱への移動 '+p.summary.TRASH+'件 / 転送 '+p.summary.FORWARD+'件を含みます。','notice warning'));
     main.append(cards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','上記の変更内容を確認しました'));
     const apply=button(p.selection?'選択した変更をGmailに適用':'全部Gmailに適用',async()=>{if(!check.checked)throw Error('変更内容の確認にチェックしてください');pendingApplyRunId=p.runId;const result=await rpc('apply',{token:p.token});renderOutcome(result);await acknowledge(result.runId);},'');apply.disabled=true;check.addEventListener('change',()=>{apply.disabled=!check.checked;});add(main,label,apply,node('p','バックアップID: '+p.snapshotId,'count'),button('差分に戻る',async()=>renderPreview(),'tertiary'));
   }
@@ -145,11 +145,11 @@
     add(main,button('保存済みの既存メール処理を確認',()=>loadMessageStatus(runId),''),button('この実行のログ',()=>history(0,runId)),node('p','実行ID: '+runId,'count'));
   }
   function resultText(value){const map={OK:'完了',START:'開始',SAVED:'保存済み',CREATED:'作成済み',ERROR:'エラー',PARTIAL:'一部完了',RECOVERY_REQUIRED:'復旧が必要',CANCELLED:'キャンセル',SCANNING:'対象メールを検索中',SCAN_FAILED:'検索失敗',READY:'検索完了・実行待ち',RUNNING:'実行中または結果確認待ち',FAILED:'失敗・結果確認が必要'};if(map[value])return map[value];for(const [key,label]of Object.entries(operations))if(value===key+' OK')return label+'完了';return value||'記録';}
-  function verificationText(value){try{const v=JSON.parse(value);if(v.kind==='MESSAGES')return '対象 延べ'+v.total+'件 / 処理済み '+v.completed+'件 / 未処理 '+v.remaining+'件 / 結果不明 '+v.uncertain+'件';if('CREATE'in v)return (v.scope==='SELECTED'?'選択適用 / ':'')+['CREATE','REPLACE','DELETE','NOOP','ERROR'].map(k=>operations[k]+' '+(v[k]||0)+'件').join(' / ');if('unresolved'in v)return '未解決 '+v.unresolved+'件 / 選択外の差分 '+(v.remaining||0)+'件 / Gmail側のみ '+v.remoteOnly+'件';}catch(_){}if(/^completed=\d+$/.test(value))return '処理済み（変更なしを含む）'+value.split('=')[1]+'件';return value;}
+  function verificationText(value){try{const v=JSON.parse(value);if(v.kind==='MESSAGES')return '対象 延べ'+v.total+'件 / 処理済み '+v.completed+'件 / 未処理 '+v.remaining+'件 / 結果不明 '+v.uncertain+'件';if('CREATE'in v)return (v.scope==='SELECTED'?'選択適用 / ':'')+['CREATE','REPLACE','DELETE','NOOP','ERROR'].map(k=>operations[k]+' '+(v[k]||0)+'件').join(' / ');if('before'in v&&'after'in v)return 'ラベル名: '+(v.before||'未作成')+' → '+v.after;if('unresolved'in v)return '未解決 '+v.unresolved+'件 / 選択外の差分 '+(v.remaining||0)+'件 / Gmail側のみ '+v.remoteOnly+'件';}catch(_){}if(/^completed=\d+$/.test(value))return '処理済み（変更なしを含む）'+value.split('=')[1]+'件';return value;}
   async function history(start=0,runId=''){
     const result=await rpc('history',{offset:start,runId});shell('実行ログ','実行日時・処理結果・エラーを新しい順に表示します。','history');if(runId)main.append(node('p','この実行のログを表示しています。実行ID: '+runId,'notice info'));const actions=node('div',null,'actions');add(actions,button('ログを更新',()=>history(start,runId)),button('操作に戻る',()=>showHome()));if(runId)actions.append(button('すべてのログ',()=>history(),'tertiary'));main.append(actions);
     if(!result.items.length)main.append(node('p','実行ログはまだありません。','empty'));
-    for(const item of result.items){const card=node('article',null,'history-card'),tags=node('div',null,'tags');add(tags,node('span',commands[item.Command]||item.Command,'tag'),node('strong',resultText(item.Result)));card.append(tags,node('p',item.TimestampTokyo||item.at||'','muted'));if(item.Error)card.append(node('p',item.Error,'notice error'));if(item.Verification)card.append(node('p',verificationText(item.Verification)));const detail=node('details',null,'details'),dl=node('dl',null,'history-details');for(const [key,label]of [['RunId','実行ID'],['RuleKey','フィルターID'],['SnapshotId','バックアップID'],['Actor','実行者'],['Risk','注意事項']])if(item[key])add(dl,node('dt',label),node('dd',item[key]));add(detail,node('summary','詳細'),dl);card.append(detail);main.append(card);}
+    for(const item of result.items){const card=node('article',null,'history-card'),tags=node('div',null,'tags');add(tags,node('span',commands[item.Command]||item.Command,'tag'),node('strong',resultText(item.Result)));card.append(tags,node('p',item.TimestampTokyo||item.at||'','muted'));if(item.Error)card.append(node('p',item.Error,'notice error'));if(item.Verification)card.append(node('p',verificationText(item.Verification)));const detail=node('details',null,'details'),dl=node('dl',null,'history-details');for(const [key,label]of [['RunId','実行ID'],['RuleKey','対象キー'],['SnapshotId','バックアップID'],['Actor','実行者'],['Risk','注意事項']])if(item[key])add(dl,node('dt',label),node('dd',item[key]));add(detail,node('summary','詳細'),dl);card.append(detail);main.append(card);}
     if(result.total>20){const pager=node('div',null,'pagination');if(start>0)pager.append(button('前の20件',()=>history(start-20,runId)));pager.append(node('p',(start+1)+'〜'+Math.min(start+20,result.total)+' / '+result.total+'件','count'));if(start+20<result.total)pager.append(button('次の20件',()=>history(start+20,runId)));main.append(pager);}if(runId)await acknowledge(runId);
   }
   for(const b of document.querySelectorAll('[data-page]'))b.addEventListener('click',action(()=>b.dataset.page==='home'?showHome():history()));

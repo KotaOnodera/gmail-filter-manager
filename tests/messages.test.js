@@ -98,3 +98,15 @@ test('final scan can recover when property write persisted but readback reported
   f.deps.state.set=(k,v)=>{set(k,v);if(k==='messageJob'&&v.status==='READY'&&!failed){failed=true;throw Error('readback failed after save');}};
   assert.equal(f.controller().scan(run.runId).status,'SCAN_FAILED');assert.equal(f.controller().scan(run.runId).status,'READY');assert.equal(f.finish(run).status,'OK');
 });
+test('existing-message processing requires its managed label changes to be reflected first',()=>{
+  const f=fixture({filters:[{id:'f1',criteria:{from:'sender@example.com'},action:{addLabelIds:['Label_1']}}]}),labelKey='33333333-3333-4333-8333-333333333333';
+  f.labelRows.push({LabelKey:labelKey,Name:'改名後',GmailLabelId:'Label_1'});f.rows[0].UserLabelRef=JSON.stringify({key:labelKey,name:'仕事'});
+  assert.equal(f.controller().list().entries[0].eligible,false);assert.throws(()=>f.controller().start([key]));assert.equal(f.calls.length,0);
+  f.data.labels.find(l=>l.id==='Label_1').name='改名後';
+  const entry=f.controller().list().entries[0];assert.deepEqual(entry.errors,[]);assert.deepEqual(entry.action.addLabelIds,['Label_1']);assert.equal(entry.eligible,true);
+});
+test('deleted managed label references cannot silently become unmanaged message labels',()=>{
+  const f=fixture({filters:[{id:'f1',criteria:{from:'sender@example.com'},action:{addLabelIds:['Label_1']}}]});
+  f.rows[0].UserLabelRef=JSON.stringify({key:'33333333-3333-4333-8333-333333333333',name:'仕事'});
+  assert.equal(f.controller().list().entries[0].eligible,false);assert.throws(()=>f.controller().start([key]));
+});

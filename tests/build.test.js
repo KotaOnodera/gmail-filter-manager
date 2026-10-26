@@ -7,15 +7,15 @@ test('build emits deterministic standalone GAS with exact current bound sources 
   try{
     B.build(path.resolve(__dirname,'..'),output);const first=fs.readFileSync(path.join(output,'Code.js'),'utf8');B.build(path.resolve(__dirname,'..'),output);assert.equal(fs.readFileSync(path.join(output,'Code.js'),'utf8'),first);
     const context=vm.createContext({});vm.runInContext(first,context);assert.equal(vm.runInContext('typeof GFM_install',context),'function');assert.equal(vm.runInContext('typeof GFM_updateInstalledCode',context),'function');
-    const payload=JSON.parse(vm.runInContext('JSON.stringify(GFMInstallPayload)',context));assert.equal(payload.length,12);
-    for(const name of ['Core','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web'])assert.equal(payload.find(f=>f.name===name).source,fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8'));
+    const payload=JSON.parse(vm.runInContext('JSON.stringify(GFMInstallPayload)',context));assert.equal(payload.length,13);
+    for(const name of ['Core','Labels','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web'])assert.equal(payload.find(f=>f.name===name).source,fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8'));
     for(const name of ['Index','Styles','Client']){assert.equal(payload.find(f=>f.name===name).type,'HTML');assert.equal(payload.find(f=>f.name===name).source,fs.readFileSync(path.join(__dirname,'../'+name+'.html'),'utf8'));}
     const installer=JSON.parse(fs.readFileSync(path.join(output,'appsscript.json'),'utf8'));assert.ok(installer.oauthScopes.includes('https://www.googleapis.com/auth/script.projects'));assert.ok(installer.oauthScopes.every(s=>!s.includes('gmail')));
     const child=JSON.parse(payload.find(f=>f.name==='appsscript').source);assert.ok(child.oauthScopes.includes('https://www.googleapis.com/auth/gmail.modify'));assert.ok(child.oauthScopes.every(s=>!s.includes('script.projects')&&!s.includes('external_request')));
     assert.ok(!first.includes('/Users/')&&!first.includes('drive.google.com/drive/folders/'));
   }finally{fs.rmSync(output,{recursive:true,force:true});}
 });
-test('generated GAS installer boots with real adapters, creates exactly four sheets and never needs Gmail services',()=>{
+test('generated GAS installer boots with real adapters, creates exactly five sheets and never needs Gmail services',()=>{
   const output=fs.mkdtempSync(path.join(os.tmpdir(),'gfm-boot-'));
   try{
     B.build(path.resolve(__dirname,'..'),output);const {fakeSheets}=require('./fake-sheets'),crypto=require('node:crypto'),f=fakeSheets();
@@ -40,7 +40,7 @@ test('generated GAS installer boots with real adapters, creates exactly four she
     });
     vm.runInContext(fs.readFileSync(path.join(output,'Code.js'),'utf8'),context);
     assert.equal(vm.runInContext('GFMInstaller.runtime().install().status',context),'COMPLETE');
-    assert.deepEqual([...f.sheets.keys()],['Filters','Diff','History','Backup']);assert.equal(project.files.length,12);
+    assert.deepEqual([...f.sheets.keys()],['Filters','Labels','Diff','History','Backup']);assert.equal(project.files.length,13);
     vm.runInContext('GFMInstaller.runtime().install()',context);assert.equal(bookCreates,1);assert.equal(scriptCreates,1);
   }finally{fs.rmSync(output,{recursive:true,force:true});}
 });

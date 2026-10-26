@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const C=require('../src/Core'),{hash}=require('./helpers');
 const I=fs.existsSync(path.join(__dirname,'../installer/Installer.js'))?require('../installer/Installer.js'):{};
-function files(){return ['Core','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web'].map(name=>({name,type:'SERVER_JS',source:fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8')})).concat(['Index','Styles','Client'].map(name=>({name,type:'HTML',source:fs.readFileSync(path.join(__dirname,'../'+name+'.html'),'utf8')})),{name:'appsscript',type:'JSON',source:fs.readFileSync(path.join(__dirname,'../appsscript.json'),'utf8')});}
+function files(){return ['Core','Labels','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web'].map(name=>({name,type:'SERVER_JS',source:fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8')})).concat(['Index','Styles','Client'].map(name=>({name,type:'HTML',source:fs.readFileSync(path.join(__dirname,'../'+name+'.html'),'utf8')})),{name:'appsscript',type:'JSON',source:fs.readFileSync(path.join(__dirname,'../appsscript.json'),'utf8')});}
 function harness(){
   let saved=null,locked=false;const books=new Map(),projects=new Map(),events=[],faults={};let serial=0;
   const fail=k=>{if(faults[k]){delete faults[k];throw new Error(k+' failure');}};

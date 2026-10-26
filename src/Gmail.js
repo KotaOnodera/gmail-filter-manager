@@ -30,6 +30,8 @@ var GFMGmail = (function () {
     }
     return {
       read,listMessages,modifyMessages,
+      createLabel:name=>service.Users.Labels.create({name,labelListVisibility:'labelShow',messageListVisibility:'show'},'me'),
+      renameLabel:(id,name)=>service.Users.Labels.patch({name},'me',id),
       create:filter=>service.Users.Settings.Filters.create({criteria:filter.criteria,action:filter.action},'me'),
       delete:id=>service.Users.Settings.Filters.remove('me',id)
     };
