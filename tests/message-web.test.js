@@ -45,3 +45,8 @@ test('message progress is readable without the operation lock or Backup reads du
  f.d.withLock=()=>{throw Error('operation still holds lock');};f.d.store.readMessageData=()=>{throw Error('No Backup reads');};
  const status=f.web().dispatch('resume',{requestId:'scan-1'});assert.equal(status.status,'DONE');assert.equal(status.runId,run.runId);assert.equal(status.messageJob.total,2);assert.equal(status.messageJob.status,'READY');assert.equal(f.writes(),0);
 });
+test('review: a start checkpoint survives History failure and remains correlated to its original request',()=>{
+ const f=fixture(),w=f.web();f.d.store.history=()=>{throw Error('History append failed');};assert.throws(()=>w.dispatch('messagesStart',{keys:null,_requestId:'start-interrupted'}),/History/);
+ const job=f.d.state.get('messageJob');assert.equal(job.status,'SCANNING');f.d.withLock=()=>{throw Error('no lock during status');};f.d.store.readMessageData=()=>{throw Error('no Backup reads');};
+ const restored=f.web().dispatch('resume',{requestId:'start-interrupted'});assert.equal(restored.runId,job.runId);assert.equal(restored.messageJob.status,'SCANNING');assert.equal(f.writes(),0);
+});

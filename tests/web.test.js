@@ -63,3 +63,10 @@ test('resume distinguishes rejected requests and expired in-flight outcomes with
  const f=fixture();assert.throws(()=>f.web.dispatch('apply',{token:'invalid',_requestId:'rejected'}),/確認/);assert.equal(f.web.dispatch('resume',{requestId:'rejected'}).status,'ERROR');
  f.deps.state.set('webActivity',{requestId:'old',action:'apply',runId:'old-run',status:'RUNNING',at:0,actor:'',bookId:'book'});f.tick(8*60*1000);assert.equal(f.web.dispatch('resume',{requestId:'old'}).status,'UNKNOWN');assert.equal(f.writes.length,0);
 });
+test('review: later tracked requests do not erase an earlier apply result',()=>{
+ const f=fixture();f.rows[0].Subject='changed';const p=f.web.dispatch('preview'),t=f.web.dispatch('prepare',{runId:p.runId});const result=f.web.dispatch('apply',{token:t.token,_requestId:'original-apply'});f.web.dispatch('preview',{_requestId:'later-preview'});
+ assert.equal(f.web.dispatch('resume',{requestId:'original-apply'}).status,'DONE');assert.equal(f.web.dispatch('resume',{requestId:'original-apply'}).result.runId,result.runId);assert.equal(f.writes.length,2);
+});
+test('request activity retention remains bounded and keeps the most recent receipts',()=>{
+ const f=fixture();for(let i=0;i<40;i++)f.web.dispatch('preview',{_requestId:'request-'+i});assert.equal(Object.keys(f.props).filter(k=>k.startsWith('webActivity:')).length,32);assert.equal(f.web.dispatch('resume',{requestId:'request-0'}).status,'NOT_FOUND');assert.equal(f.web.dispatch('resume',{requestId:'request-39'}).status,'DONE');
+});

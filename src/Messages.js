@@ -70,14 +70,14 @@ var GFMMessages = (function () {
       const current=saved.entries.map(e=>live.entries.find(x=>x.key===e.key));
       if(C.stable(current)!==C.stable(saved.entries))throw new Error('選択したフィルターの定義またはラベルが変更されています。中止して対象を再検索してください');
     }
-    function start(keys) {
+    function start(keys,requestId) {
       const previous=d.state.get('messageJob');if(previous&&!['OK','CANCELLED'].includes(previous.status))throw new Error('保存済みの既存メール処理があります。続行または中止してください');
       const before=Math.floor(d.now()/1000),view=list(before);
       if(keys!==null&&(!Array.isArray(keys)||!keys.length||new Set(keys).size!==keys.length||keys.some(k=>typeof k!=='string'||!view.entries.some(e=>e.key===k))))throw new Error('既存メールへ適用する選択が不正です');
       const chosen=keys===null?view.entries:view.entries.filter(e=>keys.includes(e.key));
       if(chosen.some(e=>e.errors.length)||keys!==null&&chosen.some(e=>!e.eligible))throw new Error('選択対象に入力エラーまたは実行できる処理がありません');
       const entries=chosen.filter(e=>e.eligible);if(!entries.length)throw new Error('既存メールに適用できる有効なフィルターがありません');
-      const runId=d.uuid(),j={runId,status:'SCANNING',before,rule:0,ruleCount:entries.length,pageToken:'',head:null,cursor:null,offset:0,total:0,completed:0,pending:null,revision:0};
+      const runId=d.uuid(),j={runId,requestId:typeof requestId==='string'&&requestId.length<=128?requestId:'',status:'SCANNING',before,rule:0,ruleCount:entries.length,pageToken:'',head:null,cursor:null,offset:0,total:0,completed:0,pending:null,revision:0};
       j.plan=saveData(runId,{entries,labels:view.labels});j.counts=saveData(runId,entries.map(()=>0));commit(j);return status(runId);
     }
     function scan(runId) {
