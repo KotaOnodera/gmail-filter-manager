@@ -4,17 +4,18 @@ var GFMClientSession=(function(){
   'use strict';
   function create(d){
     const key='gfm.pendingRequest.v1',tracked=new Set(['importCheck','import','preview','prepare','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
-    let active=null,recovery=null,serial=0;
+    const readable=new Set(['importCheck','preview','prepare','messagesList','messagesPrepare']);
+    let active=null,recovery=null,returning=null,serial=0;
     const stale=()=>new Error('画面を復元したため、古い応答は使用しません');
     function save(req){try{d.storage?.setItem(key,JSON.stringify(req));}catch(_){/* Storage may be disabled in an embedded browser. */}}
     function clear(req){try{const old=JSON.parse(d.storage?.getItem(key)||'null');if(old?.requestId===req.requestId)d.storage.removeItem(key);}catch(_){}}
     function resume(request){
       const req=active?.request||request||recovery;if(!req)return false;
-      if(active?.timer)clearTimeout(active.timer);active=null;recovery=req;d.onBusy(false);d.onRecover(req);return true;
+      if(active?.timer)clearTimeout(active.timer);returning=active&&readable.has(req.command)?active:returning;active=null;recovery=req;d.onBusy(false);d.onRecover(req);return true;
     }
     async function run(fn){
       if(active)return;
-      const ctx={request:null,timer:null};active=ctx;recovery=null;d.onBusy(true);
+      const ctx={request:null,timer:null};active=ctx;recovery=null;returning=null;d.onBusy(true);
       try{return await fn();}catch(err){if(active===ctx)d.onError(err);}
       finally{if(active===ctx){if(ctx.timer)clearTimeout(ctx.timer);active=null;d.onBusy(false);}}
     }
@@ -24,14 +25,15 @@ var GFMClientSession=(function(){
       if(ctx){ctx.request=req;if(ctx.timer)clearTimeout(ctx.timer);ctx.timer=setTimeout(()=>{if(active===ctx&&ctx.request===req&&d.isVisible())resume();},45000);if(shouldTrack)save(req);}
       try{
         const result=await d.request(command,shouldTrack?{...input,_requestId:req.requestId}:input);
-        if(ctx&&active!==ctx)throw stale();
+        if(ctx&&active!==ctx){if(returning!==ctx)throw stale();active=ctx;returning=null;recovery=null;d.onRecoveredResponse?.(req);}
         if(shouldTrack)clear(req);return result;
+      }catch(err){if(ctx&&returning===ctx){returning=null;d.onRecover(req);}throw err;
       }finally{if(ctx&&ctx.request===req&&ctx.timer){clearTimeout(ctx.timer);ctx.timer=null;}}
     }
     function restore(){
       try{const req=JSON.parse(d.storage?.getItem(key)||'null');if(!req||!tracked.has(req.command)||typeof req.requestId!=='string'||!req.requestId||req.requestId.length>128)return false;recovery=req;d.onRecover(req);return true;}catch(_){return false;}
     }
-    return {run,call,resume,restore,isRecovery:req=>recovery===req&&!active,finish:req=>{if(recovery===req){clear(req);recovery=null;}}};
+    return {run,call,resume,restore,isRecovery:req=>recovery===req&&!active,waitingResponse:req=>recovery===req&&!!returning,finish:req=>{if(recovery===req){clear(req);recovery=null;returning=null;}}};
   }
   return {create};
 })();

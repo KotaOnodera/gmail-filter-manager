@@ -25,3 +25,9 @@ test('late messagesStart response cannot launch the next scan after recovery or 
  const f=fixture();assert.ok(f.session);const old=f.session.run(async()=>{const r=await f.session.call('messagesStart',{});await f.session.call('messagesScan',{runId:r.runId});});f.session.resume();
  const fresh=f.session.run(async()=>f.session.call('preview'));f.jobs[0].resolve({runId:'old'});await old;assert.equal(f.jobs.length,2);assert.equal(f.busy.at(-1),true);f.jobs[1].resolve({});await fresh;assert.equal(f.busy.at(-1),false);
 });
+test('a slow read can finish into its recovery screen without forcing the user to fetch it again',async()=>{
+ const f=fixture();let rendered=0;const old=f.session.run(async()=>{await f.session.call('preview');rendered++;});[...f.timers.values()][0]();assert.equal(f.recover.length,1);assert.equal(f.session.waitingResponse(f.recover[0]),true);f.jobs[0].resolve({entries:[]});await old;assert.equal(rendered,1);assert.equal(f.session.isRecovery(f.recover[0]),false);assert.equal(f.busy.at(-1),false);
+});
+test('a slow read cannot overwrite a new action chosen after recovery',async()=>{
+ const f=fixture();let rendered=0;const old=f.session.run(async()=>{await f.session.call('preview');rendered++;});f.session.resume();const next=f.session.run(async()=>f.session.call('importCheck'));f.jobs[0].resolve({});await old;assert.equal(rendered,0);f.jobs[1].resolve({});await next;
+});

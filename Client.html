@@ -20,6 +20,7 @@
   function getStorage(){try{return window.sessionStorage;}catch(_){return undefined;}}
   const session=GFMClientSession.create({request:rawRpc,onBusy:setBusy,storage:getStorage(),isVisible:()=>!document.hidden,
     onError:err=>{if(pendingMessageRunId)showMessageUnknown(pendingMessageRunId,err);else if(pendingApplyRunId)showUnknown(pendingApplyRunId,err);else message(err?.message||'通信に失敗しました。実行ログを確認してください。','error');},
+    onRecoveredResponse:()=>{interruptedRequest=null;clearTimeout(recoveryPoll);recoveryRead++;},
     onRecover:req=>{userStarted=true;pendingApplyRunId='';pendingMessageRunId='';preview=null;interruptedRequest=req;recoverRequest(req);}
   });
   function action(fn){return event=>{if(event?.preventDefault)event.preventDefault();if(working)return;userStarted=true;clearMessage();return session.run(()=>fn(event));};}
@@ -52,6 +53,7 @@
         view.text.textContent='この操作の受付・結果をまだ確認できません。自動再実行はしません。「状況を更新」か実行ログで確認してください。';
         if(++view.misses<5)recoveryPoll=setTimeout(()=>{if(!document.hidden&&session.isRecovery(req))recoverRequest(req);},3000);return;
       }
+      if(status.status==='DONE'&&session.waitingResponse(req)){view.text.textContent='サーバーの処理は完了しました。画面データを受信しています。届かない場合は操作に戻って確認し直せます。';return;}
       if(status.action?.startsWith('messages')&&status.runId&&status.messageJob){
         const full=await readWithDeadline('messagesStatus',{runId:status.runId});if(!session.isRecovery(req)||sequence!==recoveryRead)return;
         session.finish(req);interruptedRequest=null;renderMessageStatus(full);return;
