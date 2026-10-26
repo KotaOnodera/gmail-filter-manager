@@ -9,7 +9,7 @@ var GFMWeb = (function () {
       input=input||{};if(typeof input!=='object'||Array.isArray(input))throw new Error('入力形式が不正です');
       return d.withLock(()=>{
         if(action==='boot'){const last=d.state.get('webOutcome');return {unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
-        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,token:confirmation('webImport',ticket)};}
+        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,labelCount:ticket.labelCount,labelTotal:ticket.labelTotal,token:confirmation('webImport',ticket)};}
         if(action==='import'){const c=checked('webImport',input.token);d.state.remove('webImport');return d.controller.importAll(true,c.ticket);}
         if(action==='preview'){d.state.remove('webApproval');const result=d.controller.preview();return result;}
         if(action==='prepare'){

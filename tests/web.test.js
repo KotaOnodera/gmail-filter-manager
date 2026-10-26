@@ -38,3 +38,11 @@ test('Web preparation returns only the server-validated selected entries',()=>{
   const pv=f.web.dispatch('preview',{}),p=f.web.dispatch('prepare',{runId:pv.runId,keys:[key]});assert.equal(p.summary.REPLACE,1);assert.deepEqual(p.entries.map(e=>e.ruleKey),[key]);
   const result=f.web.dispatch('apply',{token:p.token,keys:[key,other]});assert.equal(result.status,'OK');assert.equal(result.remaining,1);assert.equal(f.writes.length,2);
 });
+test('Web import confirmation includes the number of new labels',()=>{
+ const f=fixture(),check=f.web.dispatch('importCheck');assert.equal(check.labelCount,1);assert.equal(check.labelTotal,1);const imported=f.web.dispatch('import',{token:check.token});assert.equal(imported.labelCount,1);assert.equal(f.labelRows.length,1);
+});
+test('label dependency shown at Web confirmation is applied exactly once through the shared token',()=>{
+ const f=fixture(),lk='22222222-2222-4222-8222-222222222222';f.rows[0].UserLabel='請求書';f.labelRows.push({LabelKey:lk,Name:'請求書',GmailLabelId:''});
+ const pv=f.web.dispatch('preview'),p=f.web.dispatch('prepare',{runId:pv.runId,keys:[key]});assert.equal(p.entries.filter(e=>e.kind==='LABEL').length,1);assert.equal(p.selection.count,2);
+ assert.equal(f.web.dispatch('apply',{token:p.token}).status,'OK');const n=f.writes.length;f.web.dispatch('apply',{token:p.token});assert.equal(f.writes.length,n);
+});

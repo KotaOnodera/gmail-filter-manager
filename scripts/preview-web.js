@@ -8,6 +8,11 @@ store.appendRows(h.rows);
 const extra=[{id:'newsletter',criteria:{from:'newsletter@example.com'},action:{addLabelIds:['Label_1'],removeLabelIds:['INBOX']}},{id:'receipt',criteria:{subject:'領収書'},action:{addLabelIds:['STARRED']}}];
 h.data.filters.push(...extra);store.appendRows(extra.map(x=>C.importFilter(x,labels,crypto.randomUUID())));
 if(process.env.GFM_PREVIEW_CHANGES==='1'){const rows=f.sheets.get('Filters').values;rows[1][C.columns.indexOf('Subject')]='最初の変更';rows[2][C.columns.indexOf('Subject')]='残す変更';}
+if(process.env.GFM_PREVIEW_LABELS==='1'){
+  const existing=crypto.randomUUID(),fresh=crypto.randomUUID();
+  store.appendLabelRows([{LabelKey:existing,Name:'仕事/経理',GmailLabelId:'Label_1',SyncedName:'仕事'},{LabelKey:fresh,Name:'新規/請求書'}]);
+  store.appendRows([{RuleKey:crypto.randomUUID(),Status:'有効',From:'billing@example.com',UserLabel:'新規/請求書',Archive:true,MarkRead:true}]);
+}
 const deps={...h.deps,store,now:()=>Date.now(),actor:()=> 'owner@example.com',bookId:'book',withLock:fn=>fn(),version:r=>hash(C.stable(C.config([r])))};deps.controller=Sync.create(deps);
 const web=W.create(deps);
 let loseApplyResponse=process.env.GFM_PREVIEW_LOST_APPLY==='1';

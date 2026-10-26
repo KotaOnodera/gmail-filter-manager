@@ -16,7 +16,7 @@
 | HasAttachment / ExcludeChats | 空欄（キーなし）、TRUE、FALSEの3値 |
 | SizeBytes | 空欄または0〜2147483647の整数 |
 | SizeComparison | SizeBytesと対で指定。larger / smaller / unspecified |
-| UserLabel | ユーザーラベルの名前。現存する名前をIDに解決。1個まで |
+| UserLabel | ユーザーラベルの名前。Labelsの候補または既存名をIDに解決。1個まで |
 | Archive | INBOXを除外 |
 | MarkRead | UNREADを除外 |
 | NeverSpam | SPAMを除外 |
@@ -29,6 +29,7 @@
 | SyncedAt / SyncedHash / Result | システム列。同期情報・SHA-256・処理結果 |
 | OriginalJson | 隠し列。元のcriteria/action。大きいJSONはBackupのBLOBへの参照 |
 | OriginalRowJson | 隠し列。元の編集列。未編集判定用。大きいJSONはBLOB参照 |
+| UserLabelRef | 末尾の隠しシステム列。選択したLabelsの固定キーと表示名のJSON。手動変更不可 |
 
 Archive以下のフラグは空欄をFALSEとして扱います。TRUE/FALSEは文字列でも実際の真偽値でも読み取れます。HasAttachment/ExcludeChatsは空欄とFALSEが異なります。SizeBytesの0も欠落させません。文字列の前後空白は自動除去しません。
 
@@ -36,11 +37,23 @@ Archive以下のフラグは空欄をFALSEとして扱います。TRUE/FALSEは�
 
 無効・削除予定の行は内容を保持したままGmail設定だけを削除します。無効行の定義は再作成に使用しないため、ラベル名などの再作成向け検証は有効に戻した時点で行います。行削除はGmail削除指示になりません。
 
+## Labels
+
+`LabelKey / Name / Note / GmailLabelId / SyncedName / SyncedAt / Result`。
+
+NameとNoteが入力列、他はGAS管理です。LabelKeyはUUID、GmailLabelIdは対応するGmailの固定IDです。Nameが希望状態で、Gmail側の名前が異なればREPLACEとして改名します。ID未登録は同名の既存ユーザーラベルが一意なら紐付け、なければ作成します。既知IDがGmailから削除された場合は新規作成し、同じLabelKeyへ新IDを記録します。希望名が別IDに使われている場合は自動統合せずエラーです。
+
+LabelKey/名前/登録済みIDの重複、空白・前後空白・225文字超の名前、取得済みシステムラベルの予約名は入力エラーです。Gmailが他の名前を拒否した場合も履歴へ記録して停止します。階層はNameにフルパスを記載し、各行を独立した希望値とします。
+
+行メタデータのキーはGFM_LABELです。行全体の並替えに追従し、名前の参照更新はFiltersのGFMメタデータで行います。UserLabelがUserLabelRefの記録名と同じなら固定キーの改名に追従し、ユーザーが別の名前へ編集した場合は新しい選択を優先します。参照名の更新で条件など他の入力は変更しません。
+
+旧Filtersヘッダーとの完全一致を確認してからUserLabelRefを末尾に追加します。それ以外の不正ヘッダーを自動修復しません。インポートは管理行の希望名・メモを維持します。
+
 ## 原本マージと正規化
 
 - 取り込み時のcriteria/actionを丸ごと保持し、入力値がOriginalRowJsonと異なる列だけを原本に上書きする。
 - 編集列で値を空欄にした場合は対応する既知キーを削除する。FALSEと0は空欄扱いしない。
-- ラベル設定列の編集時は、標準ラベル・UserLabel・補助配列から配列を再構成する。その他の未知アクションキーは保持する。
+- ラベル設定列の編集時、または管理ラベルの参照がある場合は、標準ラベル・UserLabel・補助配列から配列を再構成する。その他の未知アクションキーは保持する。
 - 未編集の既知キー（空文字・空配列を含む）と未知キーは保持する。
 - 未知キーを持つ定義が一致していればNOOP。再作成が必要ならERRORにして、APIへ未知キーを送らない。
 - 比較用JSONはオブジェクトのキーを辞書順、ラベルID配列を重複除去して辞書順にする。他の配列や文字列、欠落/false/0は変更しない。
@@ -51,13 +64,13 @@ Archive以下のフラグは空欄をFALSEとして扱います。TRUE/FALSEは�
 
 `RunId / RuleKey / Operation / Before / After / Warnings / Risk / ValidationError`。
 
-OperationはCREATE、REPLACE、DELETE、NOOP、ERROR、REMOTE_ONLY。Diffのセルを編集しても実行計画には使いません。ApplyはFiltersとGmailから再計算します。NOOPは標準のフィルター機能で非表示にできます。長いBefore/Afterは表示だけ省略し、原本はBackupに保持します。
+OperationはCREATE、REPLACE、DELETE、NOOP、ERROR、REMOTE_ONLY。Diffのセルを編集しても実行計画には使いません。ApplyはFilters/LabelsとGmailから再計算します。ラベル行のRuleKeyにはlabel:接頭辞を付け、REPLACEはラベル名変更を表します。NOOPは標準のフィルター機能で非表示にできます。長いBefore/Afterは表示だけ省略し、原本はBackupに保持します。
 
 ## History
 
 `RunId / TimestampTokyo / Actor / Command / RuleKey / BeforeId / AfterId / Result / Error / SnapshotId / Verification / Risk`。
 
-追記専用。表示時刻はAsia/Tokyo（JST）。IMPORT、PREVIEW、APPLY、VERIFY、RECOVERを記録します。変更なしの行は毎行の再取得・書き込みを省略し、実行集計とVERIFY結果を記録します。Gmail設定の定義を含むシートは機密として扱ってください。
+追記専用。表示時刻はAsia/Tokyo（JST）。IMPORT、PREVIEW、APPLY、VERIFY、RECOVER、LABEL_APPLY、LABEL_RECOVERを記録します。変更なしの行は毎行の再取得・書き込みを省略し、実行集計とVERIFY結果を記録します。Gmail設定の定義を含むシートは機密として扱ってください。
 
 ## Backup
 
@@ -73,8 +86,8 @@ OperationはCREATE、REPLACE、DELETE、NOOP、ERROR、REMOTE_ONLY。Diffのセ�
 
 分割レコードには同一のHash、1始まりのPart、総数Partsを記録します。全パートとハッシュを照合して結合します。空メールボックスでもCONTEXT・MANIFEST・COMPLETEを保存します。過去スナップショットは上書きしません。COMPLETEがないものは復旧元に使いません。Backupが10万行を超えたら容量警告を表示します。
 
-DocumentPropertiesのGFM:preview、GFM:prepared、GFM:pending、GFM:cleanup、GFM:importCompleteは別の永続管理状態です。キャッシュは使いません。API前にジャーナルを読み返し確認して保存し、応答後に段階を更新します。通常の操作で手動削除しないでください。
+DocumentPropertiesのGFM:preview、GFM:prepared、GFM:pending、GFM:labelPending、GFM:cleanup、GFM:importCompleteは別の永続管理状態です。キャッシュは使いません。API前にジャーナルを読み返し確認して保存し、応答後に段階を更新します。通常の操作で手動削除しないでください。
 
 ## 選択適用の記録
 
-BackupのKind=SCOPEは、同じSnapshotIdのバックアップに結び付いた、選択RuleKeyのJSON配列です。他のバックアップと同様にPart/Parts/Hashで分割・検証し、一度保存した集合を上書きしません。承認状態は集合そのものを持たず、そのハッシュと件数を保持します。
+BackupのKind=SCOPEは、同じSnapshotIdのバックアップに結び付いた、依存するラベルのlabel:キーを含む選択キーのJSON配列です。他のバックアップと同様にPart/Parts/Hashで分割・検証し、一度保存した集合を上書きしません。承認状態は集合そのものを持たず、そのハッシュと件数を保持します。
