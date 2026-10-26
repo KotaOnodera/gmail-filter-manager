@@ -11,15 +11,58 @@
   function button(text,fn,style='secondary'){const b=node('button',text,'button '+style);b.type='button';b.addEventListener('click',action(fn));return b;}
   function clearMessage(){for(const id of ['notice','error']){$(id).hidden=true;$(id).replaceChildren();}}
   function message(text,type='success'){const el=type==='error'?$('error'):$('notice');el.replaceChildren(node('p',text));el.hidden=false;el.className='notice '+(type==='error'?'error':type==='warning'?'warning':type==='info'?'info':'');if(type==='error')el.focus();}
-  function action(fn){return async event=>{
-    if(event?.preventDefault)event.preventDefault();if(working)return;userStarted=true;working=true;clearMessage();$('busy').hidden=false;main.setAttribute('aria-busy','true');
-    const controls=[...document.querySelectorAll('button,input,select,textarea')].map(el=>[el,el.disabled]);controls.forEach(([el])=>el.disabled=true);
-    try{await fn(event);}catch(err){if(pendingMessageRunId)showMessageUnknown(pendingMessageRunId,err);else if(pendingApplyRunId)showUnknown(pendingApplyRunId,err);else message(err?.message||'通信に失敗しました。実行ログを確認してから再操作してください。','error');}
-    finally{working=false;$('busy').hidden=true;main.removeAttribute('aria-busy');controls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});}
-  };}
-  function rpc(command,input={}){
+  let disabledControls=[],interruptedRequest=null,recoveryView=null,recoveryPoll=null,recoveryRead=0;
+  function setBusy(value){
+    working=value;$('busy').hidden=!value;
+    if(value){main.setAttribute('aria-busy','true');disabledControls=[...document.querySelectorAll('button,input,select,textarea')].map(el=>[el,el.disabled]);disabledControls.forEach(([el])=>el.disabled=true);}
+    else{main.removeAttribute('aria-busy');disabledControls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});disabledControls=[];}
+  }
+  function getStorage(){try{return window.sessionStorage;}catch(_){return undefined;}}
+  const session=GFMClientSession.create({request:rawRpc,onBusy:setBusy,storage:getStorage(),isVisible:()=>!document.hidden,
+    onError:err=>{if(pendingMessageRunId)showMessageUnknown(pendingMessageRunId,err);else if(pendingApplyRunId)showUnknown(pendingApplyRunId,err);else message(err?.message||'通信に失敗しました。実行ログを確認してください。','error');},
+    onRecover:req=>{userStarted=true;pendingApplyRunId='';pendingMessageRunId='';preview=null;interruptedRequest=req;recoverRequest(req);}
+  });
+  function action(fn){return event=>{if(event?.preventDefault)event.preventDefault();if(working)return;userStarted=true;clearMessage();return session.run(()=>fn(event));};}
+  function rawRpc(command,input={}){
     if(window.GFM_LOCAL)return fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,input})}).then(r=>r.json()).then(r=>{if(r.error)throw new Error(r.error);return r.data;});
     return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).GFM_web(command,input));
+  }
+  function rpc(command,input={}){return session.call(command,input);}
+  function readWithDeadline(command,input){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('状況確認がタイムアウトしました。再確認できます。')),10000);rawRpc(command,input).then(v=>{clearTimeout(timer);resolve(v);},e=>{clearTimeout(timer);reject(e);});});}
+  async function recoverRequest(req){
+    const sequence=++recoveryRead;clearTimeout(recoveryPoll);
+    if(!session.isRecovery(req))return;
+    if(!req.requestId){session.finish(req);interruptedRequest=null;showHome();message('画面を復元しました。必要な操作を選び直してください。','info');return;}
+    if(recoveryView?.req!==req||!recoveryView.text.isConnected){
+      clearMessage();shell('実行状況を確認','画面を離れても、開始済み処理の結果を保存済み状態から確認できます。変更処理を自動再送しません。');
+      const text=node('p','保存済みの状況を取得しています。','notice info'),count=node('p','','selection-count'),refresh=node('button','状況を更新','button secondary');refresh.type='button';refresh.addEventListener('click',()=>recoverRequest(req));
+      const actions=node('div',null,'actions');add(actions,refresh,button('操作に戻る',()=>showHome(),'tertiary'));add(main,text,count,actions);
+      recoveryView={req,text,count,refresh,misses:0};
+    }
+    const view=recoveryView;view.refresh.disabled=true;
+    try{
+      const status=await readWithDeadline('resume',{requestId:req.requestId});
+      if(!session.isRecovery(req)||sequence!==recoveryRead)return;
+      if(status.messageJob){savedMessageJob=status.messageJob;view.count.textContent='対象 延べ'+status.messageJob.total+'件 / 処理済み '+status.messageJob.completed+'件 / 未処理 '+status.messageJob.remaining+'件';}
+      if(status.status==='RUNNING'){
+        view.text.textContent='サーバーで処理中です。この画面を表示し続ける必要はありません。戻ったときに状況を確認します。';
+        recoveryPoll=setTimeout(()=>{if(!document.hidden&&session.isRecovery(req))recoverRequest(req);},3000);return;
+      }
+      if(status.status==='NOT_FOUND'){
+        view.text.textContent='この操作の受付・結果をまだ確認できません。自動再実行はしません。「状況を更新」か実行ログで確認してください。';
+        if(++view.misses<5)recoveryPoll=setTimeout(()=>{if(!document.hidden&&session.isRecovery(req))recoverRequest(req);},3000);return;
+      }
+      if(status.action?.startsWith('messages')&&status.runId&&status.messageJob){
+        const full=await readWithDeadline('messagesStatus',{runId:status.runId});if(!session.isRecovery(req)||sequence!==recoveryRead)return;
+        session.finish(req);interruptedRequest=null;renderMessageStatus(full);return;
+      }
+      session.finish(req);interruptedRequest=null;
+      if(status.action==='apply'&&status.result){renderOutcome(status.result);if(status.result.status!=='UNKNOWN')rawRpc('acknowledgeOutcome',{runId:status.result.runId}).catch(()=>{});return;}
+      if(status.status==='UNKNOWN'&&status.action==='apply'&&(status.runId||req.runId)){showUnknown(status.runId||req.runId,Error('処理結果が未確定です。実行ログを確認してください。'));return;}
+      if(status.status==='DONE'&&status.action==='import'&&status.result){const r=status.result;shell('インポート完了','フィルター'+r.count+'件・ラベル'+(r.labelCount||0)+'件を追加しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));return;}
+      showHome();message(status.status==='DONE'?'処理の完了を確認しました。必要な差分・確認画面は取得し直してください。':status.error||'処理結果が未確定です。実行ログを確認してから操作してください。',status.status==='DONE'?'info':'warning');
+    }catch(err){if(session.isRecovery(req)&&sequence===recoveryRead)view.text.textContent=err.message+' 変更処理は再送していません。';}
+    finally{if(view.refresh.isConnected&&sequence===recoveryRead)view.refresh.disabled=false;}
   }
   function navigation(page){document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
   function shell(title,lead,page='home'){main.replaceChildren(node('h1',title),node('p',lead,'lead'));navigation(page);main.focus();window.scrollTo(0,0);}
@@ -27,6 +70,7 @@
     main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));navigation('home');
     const handlers={import:importCheck,all:()=>loadPreview('ALL'),selected:()=>loadPreview('SELECTED'),history:()=>history(),messages:messagesList};
     for(const b of main.querySelectorAll('[data-command]'))b.addEventListener('click',action(handlers[b.dataset.command]));
+    if(interruptedRequest)main.append(button('中断した操作の状況を確認',()=>session.resume(interruptedRequest)));
     if(savedMessageJob)main.append(button('保存済みの既存メール処理を確認',()=>loadMessageStatus(savedMessageJob.runId)));
     if(focus){main.focus();window.scrollTo(0,0);}
   }
@@ -153,8 +197,11 @@
     if(result.total>20){const pager=node('div',null,'pagination');if(start>0)pager.append(button('前の20件',()=>history(start-20,runId)));pager.append(node('p',(start+1)+'〜'+Math.min(start+20,result.total)+' / '+result.total+'件','count'));if(start+20<result.total)pager.append(button('次の20件',()=>history(start+20,runId)));main.append(pager);}if(runId)await acknowledge(runId);
   }
   for(const b of document.querySelectorAll('[data-page]'))b.addEventListener('click',action(()=>b.dataset.page==='home'?showHome():history()));
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)session.resume();});
+  window.addEventListener('pageshow',event=>{if(event.persisted)session.resume();});
   // Operations are visible before any service call. Bootstrap reads only saved outcome state.
   showHome(false);
-  rpc('boot').then(async result=>{savedMessageJob=result.messageJob||null;if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
+  const restoredRequest=session.restore();
+  rpc('boot').then(async result=>{if(restoredRequest||interruptedRequest)return;savedMessageJob=result.messageJob||null;if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
 })();
 </script>

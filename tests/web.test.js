@@ -46,3 +46,20 @@ test('label dependency shown at Web confirmation is applied exactly once through
  const pv=f.web.dispatch('preview'),p=f.web.dispatch('prepare',{runId:pv.runId,keys:[key]});assert.equal(p.entries.filter(e=>e.kind==='LABEL').length,1);assert.equal(p.selection.count,2);
  assert.equal(f.web.dispatch('apply',{token:p.token}).status,'OK');const n=f.writes.length;f.web.dispatch('apply',{token:p.token});assert.equal(f.writes.length,n);
 });
+test('resume reads only the matching request while its mutation holds the operation lock',()=>{
+ const f=fixture(),state=f.deps.state;let locked=false,inside;
+ const d={...f.deps,bookId:'book',withLock(fn){if(locked)throw Error('locked');locked=true;try{return fn();}finally{locked=false;}},controller:{apply(ticket){inside=w.dispatch('resume',{requestId:'request-1'});return {status:'OK',completed:1,runId:ticket.runId};}}};
+ const w=W.create(d);state.set('webApproval',{token:'approve',ticket:{runId:'run-1'},at:0,actor:'',bookId:'book'});
+ w.dispatch('apply',{token:'approve',_requestId:'request-1'});assert.equal(inside.status,'RUNNING');assert.equal(inside.runId,'run-1');
+ d.gmail.read=()=>{throw Error('no Gmail');};d.store.readRows=()=>{throw Error('no rows');};
+ assert.equal(w.dispatch('resume',{requestId:'request-1'}).result.status,'OK');assert.equal(w.dispatch('resume',{requestId:'other'}).status,'NOT_FOUND');assert.equal(f.writes.length,0);
+ d.actor=()=> 'other@example.com';assert.equal(W.create(d).dispatch('resume',{requestId:'request-1'}).status,'NOT_FOUND');
+});
+test('resume records import result and never repeats a mutation to retrieve it',()=>{
+ const f=fixture(),p=f.web.dispatch('importCheck'),r=f.web.dispatch('import',{token:p.token,_requestId:'import-1'});
+ const status=f.web.dispatch('resume',{requestId:'import-1'});assert.equal(status.status,'DONE');assert.equal(status.result.runId,r.runId);assert.equal(status.result.labelCount,1);assert.equal(f.writes.length,0);
+});
+test('resume distinguishes rejected requests and expired in-flight outcomes without resending',()=>{
+ const f=fixture();assert.throws(()=>f.web.dispatch('apply',{token:'invalid',_requestId:'rejected'}),/確認/);assert.equal(f.web.dispatch('resume',{requestId:'rejected'}).status,'ERROR');
+ f.deps.state.set('webActivity',{requestId:'old',action:'apply',runId:'old-run',status:'RUNNING',at:0,actor:'',bookId:'book'});f.tick(8*60*1000);assert.equal(f.web.dispatch('resume',{requestId:'old'}).status,'UNKNOWN');assert.equal(f.writes.length,0);
+});

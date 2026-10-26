@@ -40,3 +40,8 @@ test('preparing and applying blob-backed definitions never reads unrelated histo
   const backup=f.sheets.get('Backup'),getRange=backup.getRange.bind(backup);backup.getRange=(...args)=>{const r=getRange(...args),getValues=r.getValues.bind(r);r.getValues=()=>{assert.ok(!unrelated.some(row=>row>=args[0]&&row<args[0]+(args[2]||1)),'read unrelated MESSAGES rows: '+JSON.stringify(args));return getValues();};return r;};
   const ticket=controller.prepare(run.runId);assert.equal(controller.apply(ticket).status,'OK');
 });
+test('message progress is readable without the operation lock or Backup reads during a tracked request',()=>{
+ const f=fixture(),w=f.web(),run=w.dispatch('messagesStart',{keys:null,_requestId:'start-1'});w.dispatch('messagesScan',{runId:run.runId,_requestId:'scan-1'});
+ f.d.withLock=()=>{throw Error('operation still holds lock');};f.d.store.readMessageData=()=>{throw Error('No Backup reads');};
+ const status=f.web().dispatch('resume',{requestId:'scan-1'});assert.equal(status.status,'DONE');assert.equal(status.runId,run.runId);assert.equal(status.messageJob.total,2);assert.equal(status.messageJob.status,'READY');assert.equal(f.writes(),0);
+});

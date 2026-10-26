@@ -20,7 +20,7 @@
     <div class="workspace">
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <div id="error" class="notice error" role="alert" tabindex="-1" hidden></div>
-      <div id="busy" class="busy" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span>処理しています。画面を閉じずにお待ちください。</div>
+      <div id="busy" class="busy" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span>処理しています。画面を離れた場合は、戻ったときに状況を確認します。</div>
       <main id="main" tabindex="-1">
         <h1>フィルターを実行</h1>
         <p class="lead">必要な操作を選んでください。</p>
@@ -38,6 +38,7 @@
       <footer>Gmailフィルター管理<span>適用前に変更内容を確認できます。</span></footer>
     </div>
   </div>
+  <?!= session ?>
   <?!= client ?>
 </body>
 </html>
