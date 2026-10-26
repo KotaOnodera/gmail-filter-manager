@@ -8,7 +8,22 @@ var GFMWeb = (function () {
     function dispatch(action,input) {
       input=input||{};if(typeof input!=='object'||Array.isArray(input))throw new Error('入力形式が不正です');
       return d.withLock(()=>{
-        if(action==='boot'){const last=d.state.get('webOutcome');return {unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+        if(action==='boot'){const last=d.state.get('webOutcome');return {messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+        if(action==='messagesList')return d.messages.list();
+        if(action==='messagesStart')return d.messages.start(input.keys===undefined?null:input.keys);
+        if(action==='messagesScan')return d.messages.scan(input.runId);
+        if(action==='messagesStatus')return d.messages.status(input.runId);
+        if(action==='messagesCancel'){d.state.remove('webMessageApproval');return d.messages.cancel(input.runId);}
+        if(action==='messagesPrepare'){
+          const ticket=d.messages.prepare(input.runId);return {...d.messages.status(input.runId),token:confirmation('webMessageApproval',ticket)};
+        }
+        if(action==='messagesApply'){
+          const receipt=d.state.get('webMessageReceipt');
+          if(receipt&&receipt.token===input.token&&receipt.actor===d.actor()&&receipt.bookId===d.bookId)return d.messages.status(receipt.runId);
+          const c=checked('webMessageApproval',input.token);d.state.remove('webMessageApproval');
+          d.state.set('webMessageReceipt',{token:input.token,runId:c.ticket.runId,actor:d.actor(),bookId:d.bookId});
+          return d.messages.apply(c.ticket);
+        }
         if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,token:confirmation('webImport',ticket)};}
         if(action==='import'){const c=checked('webImport',input.token);d.state.remove('webImport');return d.controller.importAll(true,c.ticket);}
         if(action==='preview'){d.state.remove('webApproval');const result=d.controller.preview();return result;}

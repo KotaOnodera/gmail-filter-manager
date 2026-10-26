@@ -104,6 +104,7 @@ claspを使わない場合はnpm run buildの後、新規スタンドアロンGA
 | インストーラー | userinfo.email | 初回実行者との照合 |
 | 運用用GAS | gmail.settings.basic | フィルター管理・転送先一覧 |
 | 運用用GAS | gmail.labels | ラベルID/名前の一覧 |
+| 運用用GAS | gmail.modify | 既存メールの検索とラベル付与・アーカイブ・既読化 |
 | 運用用GAS | spreadsheets | 行メタデータを指定した更新 |
 | 運用用GAS | script.container.ui | メニューと承認ダイアログ |
 | 運用用GAS | userinfo.email | 所有者照合 |

@@ -1,6 +1,6 @@
 # Gmail Filter Manager
 
-スマホの[実行専用Web画面](docs/mobile-web.md)で、インポート・全部適用・選択適用・実行ログを操作できます。設定編集はスプシで行い、起動時にはフィルターを取得しません。
+スマホの[実行専用Web画面](docs/mobile-web.md)で、インポート・全部適用・選択適用・既存メールの整理・実行ログを操作できます。設定編集はスプシで行い、起動時にはフィルターを取得しません。
 
 GmailフィルターをGoogleスプレッドシートで編集し、差分確認と承認を経て手動同期するApps Scriptアプリです。**スプレッドシートと、それに紐付くGASの作成もコードに含まれています。**
 
@@ -49,6 +49,12 @@ buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時�
 
 初回取り込み後、Filtersの編集可能列を変更し、「差分をプレビュー」でDiffを確認します。「差分を適用」のYes/No確認に承認した場合だけGmailへ反映します。50変更または4分を目安に停止した場合は、次のDry Runと承認で続行します。
 
+## 既存メールの整理
+
+Web画面の「既存メールへ適用」から、有効なフィルターの全件または選択した対象を使って、受信済みメールへラベル付与・アーカイブ・既読化を実行できます。フィルター設定の反映とは独立しています。転送、ゴミ箱、スター、重要度、迷惑メール設定などは実行せず、画面で対象外として表示します。
+
+一致するメールIDと件数を保存してから、内容確認・承認を受けて小分けに処理します。処理済み・未処理・結果不明は再読み込み後も確認できます。詳しい対象範囲と続行方法は[スマホ画面の手順](docs/mobile-web.md#既存メールへ適用)を参照してください。導入済み環境ではコードとWebデプロイを更新し、追加のgmail.modify権限を再承認してください。
+
 ## 構成
 
 | パス | 内容 |
@@ -57,6 +63,7 @@ buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時�
 | src/Core.js | 原本マージ、入力検証、正規化、差分 |
 | src/Sync.js | 取り込み、承認付き同期、バックアップ、復旧 |
 | src/Sheets.js | 4シート、行メタデータでのID更新、追記履歴 |
+| src/Messages.js | 既存メールの対象検索、承認、分割処理、進捗保存 |
 | src/Gmail.js | 拡張Gmailサービス |
 | src/Menu.js | メニュー、所有者確認、排他制御 |
 | appsscript.json | 運用用GASのサービスと権限 |
@@ -69,7 +76,7 @@ buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時�
 
 単一所有者が自分のGmailを管理する用途です。他の編集者・共有ドライブはサポートしません。
 
-インストーラーはdrive、spreadsheets、script.projects、script.external_request、userinfo.emailを要求します。Drive権限は保存先フォルダの確認と作成したスプレッドシートの配置に使い、Gmail権限は要求しません。運用用GASはgmail.settings.basic、gmail.labels、spreadsheets、script.container.ui、userinfo.emailを使用し、Driveフォルダ操作やメール本文取得は行いません。
+インストーラーはdrive、spreadsheets、script.projects、script.external_request、userinfo.emailを要求します。Drive権限は保存先フォルダの確認と作成したスプレッドシートの配置に使い、Gmail権限は要求しません。運用用GASはgmail.settings.basic、gmail.labels、gmail.modify、spreadsheets、script.container.ui、userinfo.emailを使用します。gmail.modifyは既存メールの検索とラベル更新用です。メール本文取得やDriveフォルダ操作は行いません。
 
 Sheets APIで行のシステム列を更新するため、OAuthは全スプレッドシートを対象とする権限です。運用コードの接続先は現在のコンテナIDに限定しています。
 

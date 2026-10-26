@@ -24,12 +24,16 @@
       <main id="main" tabindex="-1">
         <h1>フィルターを実行</h1>
         <p class="lead">必要な操作を選んでください。</p>
+        <h2>フィルター設定の反映</h2>
+        <p>以下の適用操作は設定を反映します。受信済みメールの整理は下の専用操作で行います。</p>
         <div class="operation-grid">
           <section class="operation-card"><h2>インポート</h2><p>Gmailの既存設定を取り込みます。</p><button type="button" class="button secondary block" data-command="import" aria-label="インポートする">実行</button></section>
           <section class="operation-card"><h2>全部適用</h2><p>スプシの差分をまとめて反映します。</p><button type="button" class="button block" data-command="all" aria-label="全部適用へ">確認</button></section>
           <section class="operation-card"><h2>選んで部分適用</h2><p>選んだフィルターだけ反映します。</p><button type="button" class="button secondary block" data-command="selected" aria-label="フィルターを選ぶ">選ぶ</button></section>
           <section class="operation-card"><h2>実行ログ</h2><p>実行結果やエラーを確認します。</p><button type="button" class="button secondary block" data-command="history" aria-label="実行ログを開く">開く</button></section>
         </div>
+        <h2>既存メールの整理</h2>
+        <section class="operation-card"><h3>既存メールへ適用</h3><p>一致するメールへラベル付与・アーカイブ・既読化を実行します。対象件数と処理内容を実行前に確認できます。</p><button type="button" class="button secondary block" data-command="messages" aria-label="既存メールを整理する">対象を確認</button></section>
       </main>
       <footer>Gmailフィルター管理<span>適用前に変更内容を確認できます。</span></footer>
     </div>

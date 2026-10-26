@@ -22,11 +22,12 @@ var GFMRuntime = (function () {
     const C=typeof module!=='undefined'?require('./Core'):GFMCore;
     const SheetsStore=typeof module!=='undefined'?require('./Sheets'):GFMSheets;
     const Sync=typeof module!=='undefined'?require('./Sync'):GFMSync;
+    const Messages=typeof module!=='undefined'?require('./Messages'):GFMMessages;
     const state={get:k=>{const s=d.props.getProperty('GFM:'+k);return s===null?null:JSON.parse(s);},set:(k,v)=>{const s=JSON.stringify(v);if((d.byteLength?d.byteLength(s):s.length*3)>8000)throw new Error('永続状態が大きすぎます');d.props.setProperty('GFM:'+k,s);if(d.props.getProperty('GFM:'+k)!==s)throw new Error('永続状態の読み返し不一致');},remove:k=>d.props.deleteProperty('GFM:'+k)};
     const store=d.store||SheetsStore.create({book:d.book,app:d.app,api:d.api,hash:d.hash,uuid:d.uuid});
     const deps={store,state,gmail:d.gmail,hash:d.hash,uuid:d.uuid,now:d.now||(()=>Date.now()),actor:()=>d.email,notify:d.notify||(()=>{})};
     function withLock(fn){if(!d.lock.tryLock(1000))throw new Error('別の処理が実行中です。完了後に再実行してください');try{return fn();}finally{d.lock.releaseLock();}}
-    return {...deps,bookId:d.book.getId?d.book.getId():'',withLock,controller:Sync.create(deps),version:row=>d.hash(C.stable(C.config([row])))};
+    return {...deps,bookId:d.book.getId?d.book.getId():'',withLock,controller:Sync.create(deps),messages:Messages.create(deps),version:row=>d.hash(C.stable(C.config([row])))};
   }
   function initialize(book) {
     book=book||SpreadsheetApp.getActiveSpreadsheet();if(!book)throw new Error('対象スプレッドシートから初期化してください');

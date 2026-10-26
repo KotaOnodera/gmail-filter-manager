@@ -82,8 +82,19 @@ var GFMSheets = (function () {
       if(assemble(records('Backup').filter(r=>r.SnapshotId===id&&r.Kind==='BLOB'))!==text)throw new Error('メタデータの保存失敗');
       return 'gfm-blob:'+id;
     }
+    function blobRecords(id) {
+      const s=sheet('Backup'),n=s.getLastRow()-1;if(n<1)return [];
+      // Search IDs on the server. Do not download historical message pages to decode a filter.
+      const matches=s.getRange(2,1,n,1).createTextFinder(id).matchEntireCell(true).matchCase(true).useRegularExpression(false).findAll();
+      return matches.map(match=>{
+        const range=s.getRange(match.getRow(),1,1,schemas.Backup.length);
+        if(range.getFormulas()[0].some(Boolean))throw new Error('メタデータの保存行に数式があります');
+        const values=range.getValues()[0],record=Object.fromEntries(schemas.Backup.map((k,i)=>[k,values[i]]));
+        if(record.SnapshotId!==id||record.Kind!=='BLOB')throw new Error('メタデータの保存先が一致しません');return record;
+      });
+    }
     function decodeBlob(value) {
-      if(typeof value==='string'&&value.startsWith('gfm-blob:'))return assemble(records('Backup').filter(r=>r.SnapshotId===value.slice(9)&&r.Kind==='BLOB'));
+      if(typeof value==='string'&&value.startsWith('gfm-blob:'))return assemble(blobRecords(value.slice(9)));
       return value;
     }
     function readRows() {
@@ -165,6 +176,23 @@ var GFMSheets = (function () {
       if(all.filter(r=>r.Kind==='COMPLETE').length!==1||all.some(r=>r.Kind==='SCOPE'))throw new Error('選択対象の保存先が不完全か保存済みです');
       const text=JSON.stringify(keys);append('Backup',chunkRows(id,at,'SCOPE','',text));if(C.stable(readScope(id))!==C.stable(keys))throw new Error('選択対象の読み返しが一致しません');
     }
+    function readMessageData(pointer) {
+      const p=pointer,s=sheet('Backup');
+      if(!p||!Number.isSafeInteger(p.row)||p.row<2||!Number.isSafeInteger(p.parts)||p.parts<1||p.parts>1000||p.row+p.parts-1>s.getLastRow())throw new Error('既存メールの保存先が不正です');
+      const range=s.getRange(p.row,1,p.parts,schemas.Backup.length);
+      if(range.getFormulas().some(r=>r.some(Boolean)))throw new Error('保存済みの既存メールデータに数式があります');
+      const rs=range.getValues().map(r=>Object.fromEntries(schemas.Backup.map((k,i)=>[k,r[i]])));
+      if(rs.some(r=>r.SnapshotId!==p.runId||r.Kind!=='MESSAGES'||r.GmailFilterId!==p.id||r.Hash!==p.hash))throw new Error('既存メールの保存済みデータが変更されています');
+      return JSON.parse(assemble(rs));
+    }
+    function writeMessageData(runId,value) {
+      const text=JSON.stringify(value),id=d.uuid(),s=sheet('Backup');
+      const values=chunkRows(runId,new Date().toISOString(),'MESSAGES',id,text);
+      if(values.length>1000)throw new Error('既存メールデータが大きすぎます');
+      const pointer={runId,id,row:s.getLastRow()+1,parts:values.length,hash:d.hash(text)};
+      append('Backup',values);
+      if(C.stable(readMessageData(pointer))!==C.stable(value))throw new Error('既存メールデータの読み返しが一致しません');return pointer;
+    }
     function clipped(value){const s=stringify(value);return s.length<=limit?s:s.slice(0,limit-100)+' … [表示を省略。原本はBackupを参照]';}
     function writeDiff(runId,entries) {
       const s=sheet('Diff');if(s.getLastRow()>1)s.getRange(2,1,s.getLastRow()-1,schemas.Diff.length).clearContent();
@@ -174,7 +202,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {setup,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {writeMessageData,readMessageData,setup,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};
