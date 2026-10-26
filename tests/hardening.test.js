@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const C=require('../src/Core'),S=require('../src/Sync');const {harness,key,base,labels}=require('./helpers');
 test('GAS scripts load in reverse order without CommonJS or top-level service access',()=>{
-  const context=vm.createContext({});for(const name of ['Menu','Gmail','Sync','Sheets','Core'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8'),context);
+  const context=vm.createContext({});for(const name of ['Menu','Gmail','Sync','Sheets','Labels','Core'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/'+name+'.js'),'utf8'),context);
   assert.equal(vm.runInContext('GFMSheets.schemas.Filters.length',context),C.columns.length);assert.equal(vm.runInContext('typeof onOpen',context),'function');
 });
 test('duplicate unbound desired rules cannot create repeated Gmail filters',()=>{
