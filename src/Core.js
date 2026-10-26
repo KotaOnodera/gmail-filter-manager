@@ -90,7 +90,7 @@ var GFMCore = (function () {
       user=matches[0].id;
     }
     const actionCols=[...Object.keys(actionFlags),'UserLabel','AdditionalAddLabelIds','AdditionalRemoveLabelIds'];
-    if(actionCols.some(changed)) {
+    if(actionCols.some(changed)||row.UserLabelRef) {
       f.action.addLabelIds=[...extraAdd,...(user?[user]:[])];f.action.removeLabelIds=[...extraRemove];
       Object.keys(actionFlags).forEach(col=>{if(flags[col]){const [list,id]=actionFlags[col];f.action[list].push(id);}});
       ['addLabelIds','removeLabelIds'].forEach(k=>{f.action[k]=[...new Set(f.action[k])];if(!f.action[k].length)delete f.action[k];});

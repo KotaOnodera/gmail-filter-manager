@@ -33,12 +33,13 @@ var GFMLabels = (function(){
     return {entries,labels:desired};
   }
   function resolve(filterRows,labelRows,desiredLabels,originalLabels){
-    const C=typeof module!=='undefined'?require('./Core'):GFMCore,refs={};
+    const C=typeof module!=='undefined'?require('./Core'):GFMCore,refs={},errors={};
     const rows=filterRows.map(raw=>{
       const r={...raw};let found=null;
-      if(!C.blank(r.UserLabel)){
+      try{
         let ref=null;
         if(r.UserLabelRef){try{ref=JSON.parse(r.UserLabelRef);}catch(_){throw Error('UserLabelRefが破損しています');}if(!ref||!validKey(ref.key)||typeof ref.name!=='string')throw Error('UserLabelRefが不正です');}
+        if(!C.blank(r.UserLabel)){
         if(ref&&r.UserLabel===ref.name){found=labelRows.find(l=>l.LabelKey===ref.key);if(!found)throw Error('参照先のLabels行がありません: '+r.UserLabel);}
         if(!found){
           // Before the first binding, original ID disambiguates a simultaneous label rename.
@@ -52,8 +53,9 @@ var GFMLabels = (function(){
       if(found){r.UserLabel=found.Name;r.UserLabelRef=JSON.stringify(refs[r.RuleKey]);}
       else r.UserLabelRef='';
       return r;
+      }catch(err){errors[r.RuleKey]=err.message;refs[r.RuleKey]=null;return r;}
     });
-    return {rows,refs};
+    return {rows,refs,errors};
   }
   return {columns,validKey,entryKey,virtualId,config,plan,resolve};
 })();
