@@ -179,6 +179,11 @@ var GFMSync = (function () {
       function ownPatch(key,values){assertRows();patch(key,values);Object.assign(expectedRows.find(r=>r.RuleKey===key),values);assertRows();}
       log(ticket.runId,'APPLY',{result:'START',snapshotId:ticket.snapshotId,verification:JSON.stringify({...ticket.summary,scope:keys?'SELECTED':'ALL',selected:keys?keys.length:undefined})});
       try {
+        // Freeze legacy ID-to-key associations before any create changes a label's stored ID.
+        // Keep the user's displayed value here; approved renames update it only after API readback.
+        const labelKeys=new Set(current.entries.filter(e=>e.kind==='LABEL').map(e=>e.labelKey));
+        const bindings=resolve(expectedRows,expectedLabelRows,expectedState).refs;
+        for(const row of expectedRows){const target=bindings[row.RuleKey];if(target&&labelKeys.has(target.key)){const binding={key:target.key,name:row.UserLabel};if(row.UserLabelRef!==JSON.stringify(binding))ownReference(row,binding);}}
         for(const planned of current.entries) {
           if(planned.kind==='LABEL'){
             const e=planned,r=expectedLabelRows.find(r=>r.LabelKey===e.labelKey);

@@ -50,3 +50,13 @@ test('real Sheets adapter renames references without replacing the Gmail filter 
  const h=fixture(),f=fakeSheets(),store=Sheets.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows(h.rows);store.appendLabelRows(h.labelRows);
  const s=S.create({...h.deps,store});s.preview();assert.equal(s.apply(s.prepare(),true).status,'OK');assert.equal(store.readRows()[0].UserLabel,'経理');assert.equal(store.readRows()[0].GmailFilterId,'old');assert.equal(store.readLabelRows()[0].SyncedName,'経理');assert.deepEqual(h.writes,[['labelRename','Label_1']]);
 });
+test('review: unbound same-name adoption never reuses an id owned by another managed label',()=>{
+ for(const reverse of [false,true]){const h=fixture();h.rows.length=0;h.data.filters=[];h.labelRows[0].LabelKey=reverse?other:lk;const freshKey=reverse?lk:other;h.labelRows.push(lr({LabelKey:freshKey,Name:'仕事',GmailLabelId:'',SyncedName:''}));h.s.preview();assert.throws(()=>h.s.prepare(),/入力エラー/);assert.throws(()=>h.s.prepare(['label:'+freshKey]),/入力エラー/);assert.equal(h.writes.length,0);assert.equal(h.labelRows[1].GmailLabelId,'');}
+});
+test('review: explicit return to the old name selects its new label instead of the original baseline id',()=>{
+ const h=fixture();h.data.labels.find(l=>l.id==='Label_1').name='経理';h.data.labels.push({id:'new-work',name:'仕事',type:'user'});h.labelRows.push(lr({LabelKey:other,Name:'仕事',GmailLabelId:'new-work'}));h.rows[0].UserLabelRef=JSON.stringify({key:lk,name:'経理'});h.rows[0].UserLabel='仕事';
+ const p=h.s.preview();assert.equal(p.entries.find(e=>e.ruleKey===key).after.action.addLabelIds[0],'new-work');h.s.apply(h.s.prepare(['label:'+lk]),true);assert.equal(h.rows[0].UserLabel,'仕事');h.s.preview();assert.equal(h.s.apply(h.s.prepare(),true).status,'OK');assert.equal(h.data.filters[0].action.addLabelIds[0],'new-work');assert.equal(JSON.parse(h.rows[0].UserLabelRef).key,other);
+});
+test('review: legacy unbound references survive deleted-label recreation and response-loss recovery',()=>{
+ for(const fault of [null,'afterCreateLabel','updateLabelRow']){const h=fixture();h.rows[0].UserLabelRef='';h.data.labels=h.data.labels.filter(l=>l.id!=='Label_1');h.s.preview();if(fault)h.faults[fault]=true;const first=h.s.apply(h.s.prepare(),true);if(fault){assert.equal(first.status,'RECOVERY_REQUIRED');h.s.preview();assert.equal(h.s.apply(h.s.prepare(),true).status,'OK');}else assert.equal(first.status,'OK');assert.equal(h.rows[0].UserLabel,'経理');assert.equal(JSON.parse(h.rows[0].UserLabelRef).key,lk);assert.equal(h.writes.filter(w=>w[0]==='labelCreate').length,1);}
+});

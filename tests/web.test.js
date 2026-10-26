@@ -27,7 +27,7 @@ test('unacknowledged apply result survives reload and can be read by its RunId w
 });
 
 test('boot and history remain available without Gmail or Filters reads',()=>{
-  const f=fixture();f.deps.gmail.read=()=>{throw Error('Gmail must not be read on startup');};f.deps.store.readRows=()=>{throw Error('Filters must not be read on startup');};
+  const f=fixture();f.deps.gmail.read=()=>{throw Error('Gmail must not be read on startup');};f.deps.store.readRows=()=>{throw Error('Filters must not be read on startup');};f.deps.store.readLabelRows=()=>{throw Error('Labels must not be read on startup');};
   assert.equal(f.web.dispatch('boot',{}).unseenOutcome,null);assert.equal(f.web.dispatch('history',{}).items.length,0);assert.equal(f.writes.length,0);
 });
 test('removed Web editing and listing commands are rejected without mutations',()=>{

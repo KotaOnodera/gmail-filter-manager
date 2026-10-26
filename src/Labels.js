@@ -21,6 +21,7 @@ var GFMLabels = (function(){
         if(matches.some(l=>l.type!=='user'))throw Error('予約済みのシステムラベル名です');
         if(matches.some(l=>l.id!==r.GmailLabelId)&&(r.GmailLabelId||matches.length!==1))throw Error('変更先の名前が別のラベルで使用されています');
         const adopt=!r.GmailLabelId&&matches.length===1?matches[0]:null;
+        if(adopt&&rows.some(x=>x.LabelKey!==r.LabelKey&&x.GmailLabelId===adopt.id))throw Error('同名ラベルのIDは別のLabels行が管理しています。先に改名を反映してください');
         const id=before?before.id:adopt?adopt.id:virtualId(r.LabelKey);
         e.after={id,name:r.Name,type:'user'};
         e.operation=before?(before.name===r.Name?'NOOP':'REPLACE'):adopt?'NOOP':'CREATE';
@@ -44,7 +45,7 @@ var GFMLabels = (function(){
         if(!found){
           // Before the first binding, original ID disambiguates a simultaneous label rename.
           let original={},baseline={};try{original=JSON.parse(r.OriginalJson||'{}');baseline=JSON.parse(r.OriginalRowJson||'{}');}catch(_){/* Core validates malformed original data. */}
-          if(r.UserLabel===baseline.UserLabel){const ids=original.action?.addLabelIds||[];found=labelRows.find(l=>l.GmailLabelId&&ids.includes(l.GmailLabelId));}
+          if(!ref&&r.UserLabel===baseline.UserLabel){const ids=original.action?.addLabelIds||[];found=labelRows.find(l=>l.GmailLabelId&&ids.includes(l.GmailLabelId));}
           if(!found){const matches=labelRows.filter(l=>l.Name===r.UserLabel);if(matches.length>1)throw Error('参照先ラベル名が重複しています');found=matches[0];}
           if(!found){const old=(originalLabels||[]).find(l=>l.type==='user'&&l.name===r.UserLabel);if(old)found=labelRows.find(l=>l.GmailLabelId===old.id);}
         }
