@@ -38,3 +38,14 @@ test('active accepted job retains priority over older preparation and clears onl
  assert.ok(f.ids.main.textContent.includes('フィルター適用の進捗'));assert.equal(f.pending.filter(r=>r.command==='prepareStatus').length,0);
  const back=f.ids.main.querySelectorAll('button').find(b=>b.textContent==='操作に戻る');await back.events.click();await new Promise(setImmediate);assert.ok(f.ids.main.textContent.includes('保存済みの適用確認を開く'),'viewing another job must not erase saved preparation');
 });
+for(const target of ['PREPARING','READY'])test('real continuation '+target+' restores when recovery updates its paused source after preparation creation',async()=>{
+ const C=require('../src/Core'),Sync=require('../src/Sync'),Jobs=require('../src/Jobs'),Web=require('../src/Web'),Sheets=require('../src/Sheets'),{fakeSheets}=require('./fake-sheets'),{harness,hash}=require('./helpers'),crypto=require('node:crypto');
+ const h=harness(),sheetEnv=fakeSheets(),store=Sheets.create({...sheetEnv,hash,uuid:()=>crypto.randomUUID()});store.setup();store.appendRows(h.rows);const raw=sheetEnv.sheets.get('Filters').values,subject=C.columns.indexOf('Subject');raw[1][subject]='approved';
+ const deps={...h.deps,store,bookId:'book',withLock:fn=>fn(),scheduler:{ensure(){},exists:()=>true,clear(){}}};deps.jobs=Jobs.create(deps);deps.controller=Sync.create(deps);const web=Web.create(deps),pv=web.dispatch('preview'),approval=web.dispatch('prepare',{runId:pv.runId});web.dispatch('apply',{token:approval.token});
+ const create=deps.gmail.create;deps.gmail.create=value=>{const fresh=create(value);raw[1][subject]='edited for continuation';return fresh;};for(let n=0;n<20&&deps.jobs.status().status!=='PAUSED';n++)deps.jobs.run();assert.equal(deps.jobs.status().status,'PAUSED');
+ h.tick(100);const p=web.dispatch('prepareRemaining',{runId:pv.runId});assert.equal(h.props.filterPreparation.createdAt,100);h.tick(100);deps.jobs.run();assert.equal(h.props.filterJob.updatedAt,200);
+ if(target==='READY'){h.tick(100);deps.jobs.run();h.tick(100);deps.jobs.run();}
+ const boot=web.dispatch('boot');assert.equal(boot.filterPreparation.status,target);assert.equal(boot.filterPreparation.previousRunId,pv.runId);assert.ok(boot.filterPreparation.createdAt<boot.filterJob.updatedAt);const before=h.writes.length,f=bootFixture();f.pending.find(r=>r.command==='boot').resolve(boot);await new Promise(setImmediate);
+ const request=f.pending.find(r=>r.command==='prepareStatus');assert.ok(request,'source recovery timestamp must not hide its continuation preparation');assert.equal(request.input.preparationId,p.preparationId);request.resolve(web.dispatch('prepareStatus',request.input));await new Promise(setImmediate);
+ assert.ok(f.ids.main.textContent.includes(target==='READY'?'選択した変更を適用':'適用内容の確認を準備'));assert.equal(f.pending.filter(r=>r.command==='apply').length,0);assert.equal(h.writes.length,before);
+});

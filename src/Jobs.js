@@ -86,7 +86,7 @@ var GFMJobs=(function(){
     function prepareStatus(id){
       const p=d.state.get('filterPreparation');if(!p||p.preparationId!==id)throw Error('準備中の確認は見つかりません');identity(p);
       if(p.status==='PREPARING'&&!d.scheduler.exists())d.withLock(()=>d.scheduler.ensure());
-      const result={preparationId:id,status:p.status,phase:p.phase,error:p.error||'',timings:p.timings||{},updatedAt:p.updatedAt};
+      const result={preparationId:id,previousRunId:p.previousRunId||'',createdAt:p.createdAt,status:p.status,phase:p.phase,error:p.error||'',timings:p.timings||{},updatedAt:p.updatedAt};
       if(p.status==='READY'){const a=d.store.readJobData(p.approval);return {...result,ticket:p.ticket,entries:a.entries,labels:L.plan(a.labelRows,a.state.labels).labels};}return result;
     }
     function prepareRun(p){
