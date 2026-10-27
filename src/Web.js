@@ -61,7 +61,7 @@ var GFMWeb = (function () {
       }
       let originalEntries=null;if(sourceView){const source=d.state.get('webView:'+sourceView.viewId);originalEntries=d.store.readWebView(source.pointer).result.entries||[];}
       if(originalEntries&&Array.isArray(input.keys)){const chosen=originalEntries.filter(e=>input.keys.includes(e.ruleKey)),refs=new Set(chosen.flatMap(e=>[...(e.after?.action?.addLabelIds||[]),...(e.after?.action?.removeLabelIds||[])]));originalEntries=originalEntries.filter(e=>input.keys.includes(e.ruleKey)||e.kind==='LABEL'&&refs.has(e.after?.id||L.virtualId(e.labelKey)));}
-      const data={previousRunId:input.previousRunId||'',originalEntries,viewId,action,runId:h.runId,sourceView,preparationId:h.preparationId,actor:h.actor,bookId:h.bookId,mode:input._viewMode==='SELECTED'||input.keys!==undefined?'SELECTED':'ALL',keys:input.keys||[],revision:0,result,config:configHash()};
+      const data={previousRunId:input.previousRunId||result.previousRunId||'',originalEntries,viewId,action,runId:h.runId,sourceView,preparationId:h.preparationId,actor:h.actor,bookId:h.bookId,mode:input._viewMode==='SELECTED'||input.keys!==undefined?'SELECTED':'ALL',keys:input.keys||[],revision:0,result,config:configHash()};
       h.pointer=d.store.writeWebView(viewId,data);d.state.set('webView:'+viewId,h);ids.push(viewId);d.state.set('webViewIndex',ids);return {...result,_view:locator(h)};
     }
     function readyPreparation(preparationId){
@@ -125,11 +125,16 @@ var GFMWeb = (function () {
         try{const ticket=d.messages.prepare(h.runId);action='messagesPrepare';result={...d.messages.status(h.runId),...confirmation('webMessageApproval',ticket)};}
         catch(e){if(!/定義|ラベル.*変更/.test(e.message))throw e;d.messages.cancel(h.runId);d.state.remove('webMessageApproval');action='messagesList';result=d.messages.list();}
       }else if(['prepare','prepareStart','prepareRemaining','preview'].includes(h.action)){
-        const previousRunId=v.previousRunId||(h.action==='prepareRemaining'?h.runId:'');
+        if(v.previousRunId&&v.result.previousRunId&&v.previousRunId!==v.result.previousRunId)throw Error('元のジョブの対応が一致しません。保存済みの状況を確認してください');
+        const previousRunId=v.previousRunId||v.result.previousRunId||(h.action==='prepareRemaining'?h.runId:'');
         if(previousRunId){
           if(!owned(job)||job.runId!==previousRunId)throw Error('元のジョブが変更されています。保存済みの状況を確認してください');
           const a=d.store.readJobData(job.ticket.jobApproval),sourceId=(d.state.get('webViewIndex')||[]).find(id=>{const source=d.state.get('webView:'+id);return owned(source)&&(source.preparationId&&source.preparationId===job.ticket.jobApproval.runId||source.action==='prepare'&&source.runId===job.runId);}),source=sourceId?d.store.readWebView(d.state.get('webView:'+sourceId).pointer):null;
-          keys=source?.mode==='SELECTED'?source.keys:a.keys;mode='SELECTED';original=a.entries;
+          // Only the initial remaining confirmation lacks a current direct
+          // selection. Later previews/preparations may deliberately narrow it.
+          if(h.action==='prepareRemaining'||v.mode!=='SELECTED')keys=source?.mode==='SELECTED'?source.keys:a.keys;
+          const allowed=new Set(a.keys);if(keys.some(k=>!allowed.has(k)))throw Error('元の承認範囲外の対象が選択されています。保存済みの状況を確認してください');
+          mode='SELECTED';original=v.originalEntries||v.result.entries||a.entries;
         }
         d.state.remove('webApproval');action='preview';result={...d.controller.preview(),...(previousRunId?{previousRunId}:{})};
       }else throw Error('この画面からは再確認できません');
@@ -140,7 +145,7 @@ var GFMWeb = (function () {
       const changed=[...before.keys()].filter(k=>available.has(k)&&!same(definition(before.get(k)),definition(available.get(k)))) ;
       keys=keys.filter(k=>available.has(k)&&!invalid.includes(k));
       const changes={missing,invalid,changed};result={...result,reconfirmation:changes};
-      result=saveView(action,{_viewMode:mode,...(mode==='SELECTED'?{keys}:{})},result);
+      result=saveView(action,{_viewMode:mode,...(result.previousRunId?{previousRunId:result.previousRunId}:{}),...(mode==='SELECTED'?{keys}:{})},result);
       return {status:'OK',action,mode,keys,changes,result};
     }
     function updateView(input){
