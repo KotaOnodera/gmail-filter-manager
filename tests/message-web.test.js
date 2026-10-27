@@ -50,3 +50,20 @@ test('review: a start checkpoint survives History failure and remains correlated
  const job=f.d.state.get('messageJob');assert.equal(job.status,'SCANNING');f.d.withLock=()=>{throw Error('no lock during status');};f.d.store.readMessageData=()=>{throw Error('no Backup reads');};
  const restored=f.web().dispatch('resume',{requestId:'start-interrupted'});assert.equal(restored.runId,job.runId);assert.equal(restored.messageJob.status,'SCANNING');assert.equal(f.writes(),0);
 });
+
+test('scan summaries and recovered checkpoints keep totals provisional across failure and saved-cursor retry',()=>{
+ const f=fixture(),w=f.web();let calls=0;
+ f.d.gmail.listMessages=(query,token)=>{calls++;if(calls===2)throw Error('search quota');return token?{ids:['c'],nextPageToken:''}:{ids:['a','b'],nextPageToken:'next'};};
+ const run=w.dispatch('messagesStart',{keys:null,_requestId:'start'});assert.equal(run.totalKnown,false);
+ const first=w.dispatch('messagesScan',{runId:run.runId,_requestId:'scan-first'});assert.equal(first.total,2);assert.equal(first.totalKnown,false);
+ const failed=w.dispatch('messagesScan',{runId:run.runId,_requestId:'scan-fail'});assert.equal(failed.status,'SCAN_FAILED');assert.equal(failed.total,2);assert.match(failed.error,/quota/);assert.equal(failed.totalKnown,false);
+ const recovered=f.web().dispatch('resume',{requestId:'scan-fail'});assert.equal(recovered.status,'DONE');assert.equal(recovered.messageJob.totalKnown,false);assert.equal(recovered.messageJob.total,2);
+ assert.throws(()=>w.dispatch('messagesPrepare',{runId:run.runId}),/検索完了/);
+ const ready=f.web().dispatch('messagesScan',{runId:run.runId});assert.equal(ready.status,'READY');assert.equal(ready.totalKnown,true);assert.equal(ready.total,3);assert.equal(ready.entries[0].count,3);assert.equal(calls,3);assert.equal(f.writes(),0);
+ const confirm=w.dispatch('messagesPrepare',{runId:run.runId});const view=f.web().dispatch('viewGet',confirm._view);assert.equal(view.status,'OK');assert.equal(view.result.total,3);assert.equal(f.writes(),0);
+});
+test('saved message confirmation cannot restore an obsolete revision after progress advances',()=>{
+ const f=fixture();f.d.messageBatchSize=1;f.d.messages=M.create(f.d);const w=f.web(),run=w.dispatch('messagesStart',{keys:null});w.dispatch('messagesScan',{runId:run.runId});
+ const confirm=w.dispatch('messagesPrepare',{runId:run.runId});f.d.messages.apply(f.d.state.get('messageApproval'));
+ const restored=f.web().dispatch('viewGet',confirm._view);assert.equal(restored.status,'INVALID');assert.match(restored.error,/状態が変更/);assert.equal(f.writes(),1);
+});

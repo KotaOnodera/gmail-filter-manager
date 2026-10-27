@@ -54,7 +54,7 @@ var GFMMessages = (function () {
       });return {entries,labels:remote.labels};
     }
     function jobFor(runId) {const j=d.state.get('messageJob');if(!j||j.runId!==runId)throw new Error('既存メールの実行IDが一致しません。保存済みの処理を確認してください');return j;}
-    function summary(j) {return {kind:'MESSAGES',runId:j.runId,status:j.status,total:j.total,completed:j.completed,remaining:j.total-j.completed,uncertain:j.pending?j.pending.count:0,error:j.error||'',scanRule:j.rule,ruleCount:j.ruleCount,revision:j.revision};}
+    function summary(j) {return {kind:'MESSAGES',runId:j.runId,status:j.status,total:j.total,totalKnown:!['SCANNING','SCAN_FAILED'].includes(j.status)&&j.rule===j.ruleCount,completed:j.completed,remaining:j.total-j.completed,uncertain:j.pending?j.pending.count:0,error:j.error||'',scanRule:j.rule,ruleCount:j.ruleCount,revision:j.revision};}
     function commit(j) {
       j.revision=(j.revision||0)+1;
       // Save a small checkpoint before logging or issuing any Gmail mutation.
