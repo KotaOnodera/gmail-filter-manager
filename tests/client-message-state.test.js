@@ -42,3 +42,10 @@ test('cancelled incomplete search keeps its saved count provisional and offers n
 test('starting a search renders the actual first outstanding scan, then zero READY without mutation',async()=>{
  const f=fixture();f.resolve('boot',{});await turn();f.click('messages');f.resolve('messagesList',{entries:[{...entry,count:undefined}],labels:[]});await turn();f.click('適用できる全件のメールを検索');f.resolve('messagesStart',{...run,total:0,remaining:0});await turn();assert.match(text(f),/検索リクエストの応答を待っています/);assert.equal(f.pending.filter(p=>p.command==='messagesScan').length,1);f.resolve('messagesScan',{...run,status:'READY',total:0,remaining:0});await turn();assert.match(text(f),/検索が完了/);assert.equal(f.pending.filter(p=>p.command==='messagesApply').length,0);
 });
+test('timed-out saved status retries its original run even when boot reports a different latest job',async()=>{
+ const storage=new Map([['gfm.savedView.v1',JSON.stringify({viewId:'',action:'messagesStatus',runId:'original-run'})]]),f=fixture(storage);
+ f.resolve('boot',{messageJob:{...run,runId:'new-run'}});await turn();assert.equal(f.pending.find(p=>p.command==='messagesStatus').input.runId,'original-run');
+ [...f.timers.values()].find(t=>t.ms===10000).fn();await turn();f.click('取得し直す');await turn();
+ assert.deepEqual(f.pending.filter(p=>p.command==='messagesStatus').map(p=>p.input.runId),['original-run','original-run']);
+ f.resolve('messagesStatus',{...run,runId:'original-run'});f.resolve('messagesStatus',{...run,runId:'original-run'});await turn();assert.match(text(f),/実行ID: original-run/);assert.doesNotMatch(text(f),/実行ID: new-run/);assert.equal(f.pending.filter(p=>['messagesStart','messagesScan','messagesApply'].includes(p.command)).length,0);
+});

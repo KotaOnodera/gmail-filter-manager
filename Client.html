@@ -36,9 +36,9 @@
     if(!currentView)return;const epoch=viewEpoch;
     rawRpc('viewUpdate',{...currentView,keys:[...selected],revision:++selectionRevision}).then(r=>{if(epoch===viewEpoch&&r.status!=='OK'&&r.status!=='STALE')message('選択内容を保存できませんでした。再読み込み前に保存済み画面を確認してください。','warning');}).catch(()=>{if(epoch===viewEpoch)message('選択内容を保存できませんでした。選択し直して再保存できます。','warning');});
   }
-  function retrySavedView(action,error){
+  function retrySavedView(action,error,view=null){
     shell('保存した画面を再確認','保存期限・設定変更・通信状態を確認してください。');main.append(node('p',error||'保存した表示が見つからないか、確認が失効しています。','notice warning'));
-    const retry=action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):action==='messagesStatus'&&savedMessageJob?()=>loadMessageStatus(savedMessageJob.runId):()=>loadPreview(mode);
+    const retry=action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):action==='messagesStatus'&&view?()=>loadSavedView(view):()=>loadPreview(mode);
     add(main,button('取得し直す',retry,''),button('操作に戻る',()=>showHome(),'tertiary'));
   }
   function renderSavedView(saved){
@@ -57,7 +57,7 @@
     const epoch=viewEpoch;
     try{if(view.action==='messagesStatus'){const result=await readWithDeadline('messagesStatus',{runId:view.runId});if(epoch===viewEpoch)renderMessageStatus(result);return;}
       const saved=await readWithDeadline('viewGet',view);if(epoch===viewEpoch)renderSavedView(saved);}
-    catch(e){if(epoch===viewEpoch)retrySavedView(view.action,e.message);}
+    catch(e){if(epoch===viewEpoch)retrySavedView(view.action,e.message,view);}
   }
   async function recoverRequest(req){
     const sequence=++recoveryRead;clearTimeout(recoveryPoll);
