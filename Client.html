@@ -36,9 +36,9 @@
     if(!currentView)return;const epoch=viewEpoch;
     rawRpc('viewUpdate',{...currentView,keys:[...selected],revision:++selectionRevision}).then(r=>{if(epoch===viewEpoch&&r.status!=='OK'&&r.status!=='STALE')message('選択内容を保存できませんでした。再読み込み前に保存済み画面を確認してください。','warning');}).catch(()=>{if(epoch===viewEpoch)message('選択内容を保存できませんでした。選択し直して再保存できます。','warning');});
   }
-  function retrySavedView(action,error){
+  function retrySavedView(action,error,view=null){
     shell('保存した画面を再確認','保存期限・設定変更・通信状態を確認してください。');main.append(node('p',error||'保存した表示が見つからないか、確認が失効しています。','notice warning'));
-    const retry=action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):()=>loadPreview(mode);
+    const retry=action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):action==='messagesStatus'&&view?()=>loadSavedView(view):()=>loadPreview(mode);
     add(main,button('取得し直す',retry,''),button('操作に戻る',()=>showHome(),'tertiary'));
   }
   function renderSavedView(saved){
@@ -55,8 +55,9 @@
   }
   async function loadSavedView(view){
     const epoch=viewEpoch;
-    try{const saved=await readWithDeadline('viewGet',view);if(epoch===viewEpoch)renderSavedView(saved);}
-    catch(e){if(epoch===viewEpoch)retrySavedView(view.action,e.message);}
+    try{if(view.action==='messagesStatus'){const result=await readWithDeadline('messagesStatus',{runId:view.runId});if(epoch===viewEpoch)renderMessageStatus(result);return;}
+      const saved=await readWithDeadline('viewGet',view);if(epoch===viewEpoch)renderSavedView(saved);}
+    catch(e){if(epoch===viewEpoch)retrySavedView(view.action,e.message,view);}
   }
   async function recoverRequest(req){
     const sequence=++recoveryRead;clearTimeout(recoveryPoll);
@@ -72,14 +73,17 @@
     try{
       const status=await readWithDeadline('resume',{requestId:req.requestId});
       if(!session.isRecovery(req)||sequence!==recoveryRead)return;
-      if(status.messageJob){savedMessageJob=status.messageJob;view.count.textContent='対象 延べ'+status.messageJob.total+'件 / 処理済み '+status.messageJob.completed+'件 / 未処理 '+status.messageJob.remaining+'件';}
+      if(status.messageJob){savedMessageJob=status.messageJob;view.count.textContent=messageCountText(status.messageJob);}
       if(status.status==='RUNNING'){
-        view.text.textContent='サーバーで処理中です。この画面を表示し続ける必要はありません。戻ったときに状況を確認します。';
+        view.text.textContent=status.action==='messagesScan'?'検索リクエストの完了を確認しています。最後の保存状況を表示しています。メールはまだ変更していません。':'サーバーで処理中です。この画面を表示し続ける必要はありません。戻ったときに状況を確認します。';
         recoveryPoll=setTimeout(()=>{if(!document.hidden&&session.isRecovery(req))recoverRequest(req);},3000);return;
       }
       if(status.status==='NOT_FOUND'){
         view.text.textContent='この操作の受付・結果をまだ確認できません。自動再実行はしません。「状況を更新」か実行ログで確認してください。';
         if(++view.misses<5)recoveryPoll=setTimeout(()=>{if(!document.hidden&&session.isRecovery(req))recoverRequest(req);},3000);return;
+      }
+      if(status.status==='UNKNOWN'&&status.action==='messagesScan'){
+        view.text.textContent='検索リクエストの完了を確認できません。表示件数は最後の保存状況です。「状況を更新」で受付・結果を確認してください。検索もメール変更も自動再送しません。';return;
       }
       if(status.status==='DONE'&&status.viewId){
         const saved=await readWithDeadline('viewGet',{viewId:status.viewId,runId:status.runId});if(!session.isRecovery(req)||sequence!==recoveryRead)return;
@@ -222,21 +226,34 @@
     const all=button('適用できる全件のメールを検索',()=>startMessages(null),'');all.disabled=view.entries.some(e=>e.errors.length)||!view.entries.some(e=>e.eligible);
     add(main,all,node('h2','選択して適用'),count,messageCards(view.entries,true,update),next,button('操作に戻る',()=>showHome(),'tertiary'));
   }
-  async function startMessages(keys){const run=await rpc('messagesStart',{keys});savedMessageJob=run;pendingMessageRunId=run.runId;const result=await rpc('messagesScan',{runId:run.runId});renderMessageStatus(result);}
+  async function startMessages(keys){const run=await rpc('messagesStart',{keys});await scanMessages(run);}
+  async function scanMessages(run){
+    renderMessageStatus(run,true);pendingMessageRunId=run.runId;renderMessageStatus(await rpc('messagesScan',{runId:run.runId}));
+  }
+  function messageCountText(result){
+    const scanning=result.totalKnown===false||['SCANNING','SCAN_FAILED'].includes(result.status);
+    return (scanning?'検索済み':'対象')+' 延べ'+result.total+'件 / 処理済み '+result.completed+'件 / '+(scanning?'検索済みの未処理':'未処理')+' '+result.remaining+'件 / 結果不明 '+(result.uncertain||0)+'件'+(scanning?'（総対象件数は未確定）':'');
+  }
   async function loadMessageStatus(runId){renderMessageStatus(await rpc('messagesStatus',{runId}));}
-  function renderMessageStatus(result){
+  function renderMessageStatus(result,requestPending=false){
     pendingMessageRunId='';savedMessageJob=result;labels=result.labels||labels;
+    // Message progress is already persisted; remember only its status route and RunId.
+    rememberView({viewId:'',action:'messagesStatus',runId:result.runId});
     shell('既存メールの処理状況','メール単位で処理します。同じメールが複数のフィルターに一致した場合は延べ件数として数えます。');
     const scanning=['SCANNING','SCAN_FAILED'].includes(result.status),done=result.status==='OK';
     if(done)main.append(node('p','既存メールへの適用が完了しました。','notice'));
-    else if(scanning)main.append(node('p','対象メールを検索しています。メールはまだ変更していません。','notice info'));
+    else if(requestPending)main.append(node('p','検索リクエストの応答を待っています。このバッチを検索しています。メールはまだ変更していません。','notice info'));
+    else if(result.status==='SCAN_FAILED')main.append(node('p','対象メールの検索に失敗しました。原因を確認し、「検索を再試行」で保存済みの対象から続行してください。メールはまだ変更していません。','notice error'));
+    else if(scanning)main.append(node('p','ここまで検索済み・続行待ちです。「対象メールの検索を続ける」で次のバッチへ進んでください。待つだけでは進みません。メールはまだ変更していません。','notice info'));
     else if(result.status==='CANCELLED')main.append(node('p','処理を中止しました。処理済みの変更は維持されます。','notice warning'));
     else main.append(node('p',result.status==='READY'?'検索が完了しました。対象件数と処理内容を確認してから実行してください。':'処理の続行には、もう一度内容を確認してください。','notice info'));
-    main.append(node('p',(scanning?'検索済み':'対象')+' 延べ'+result.total+'件 / 処理済み '+result.completed+'件 / '+(scanning?'検索済みの未処理':'未処理')+' '+result.remaining+'件','selection-count'));
+    main.append(node('p',messageCountText(result),'selection-count'));
+    if(scanning)main.append(node('p','件数は保存済みのメールIDをフィルターごとに数えた累計です。同じメールが複数定義に一致すると重複して数えます。全体の完了率は検索完了まで確定しません。','muted'));
     if(result.uncertain)main.append(node('p','結果不明 '+result.uncertain+'件（未処理件数に含みます）。続行時は保存済みの同じメールへ再適用します。ラベルは重複しません。','notice warning'));
     if(result.error)main.append(node('p',result.error,'notice error'));
     const actions=node('div',null,'actions');
-    if(scanning)actions.append(button('対象メールの検索を続ける',async()=>{pendingMessageRunId=result.runId;renderMessageStatus(await rpc('messagesScan',{runId:result.runId}));},''));
+    if(requestPending){main.append(messageCards(result.entries||[]),node('p','実行ID: '+result.runId,'count'));return;}
+    if(scanning)actions.append(button(result.status==='SCAN_FAILED'?'検索を再試行':'対象メールの検索を続ける',()=>scanMessages(result),''));
     else if(!done&&result.status!=='CANCELLED')actions.append(button('既存メールへの適用を確認',()=>prepareMessages(result.runId),''));
     add(actions,button('保存済みの状況を更新',()=>loadMessageStatus(result.runId)),button('この実行のログ',()=>history(0,result.runId)));
     if(!done&&result.status!=='CANCELLED')actions.append(button('残りの処理を中止する',async()=>{
@@ -262,7 +279,7 @@
     if(error?.message)main.append(node('p',error.message,'notice warning'));
     add(main,button('保存済みの既存メール処理を確認',()=>loadMessageStatus(runId),''),button('この実行のログ',()=>history(0,runId)),node('p','実行ID: '+runId,'count'));
   }
-  function resultText(value){const map={OK:'完了',START:'開始',SAVED:'保存済み',CREATED:'作成済み',ERROR:'エラー',PARTIAL:'一部完了',RECOVERY_REQUIRED:'復旧が必要',CANCELLED:'キャンセル',SCANNING:'対象メールを検索中',SCAN_FAILED:'検索失敗',READY:'検索完了・実行待ち',RUNNING:'実行中または結果確認待ち',FAILED:'失敗・結果確認が必要'};if(map[value])return map[value];for(const [key,label]of Object.entries(operations))if(value===key+' OK')return label+'完了';return value||'記録';}
+  function resultText(value){const map={OK:'完了',START:'開始',SAVED:'保存済み',CREATED:'作成済み',ERROR:'エラー',PARTIAL:'一部完了',RECOVERY_REQUIRED:'復旧が必要',CANCELLED:'キャンセル',SCANNING:'検索の保存地点',SCAN_FAILED:'検索失敗',READY:'検索完了・実行待ち',RUNNING:'実行中または結果確認待ち',FAILED:'失敗・結果確認が必要'};if(map[value])return map[value];for(const [key,label]of Object.entries(operations))if(value===key+' OK')return label+'完了';return value||'記録';}
   function verificationText(value){try{const v=JSON.parse(value);if(v.kind==='MESSAGES')return '対象 延べ'+v.total+'件 / 処理済み '+v.completed+'件 / 未処理 '+v.remaining+'件 / 結果不明 '+v.uncertain+'件';if('CREATE'in v)return (v.scope==='SELECTED'?'選択適用 / ':'')+['CREATE','REPLACE','DELETE','NOOP','ERROR'].map(k=>operations[k]+' '+(v[k]||0)+'件').join(' / ');if('before'in v&&'after'in v)return 'ラベル名: '+(v.before||'未作成')+' → '+v.after;if('unresolved'in v)return '未解決 '+v.unresolved+'件 / 選択外の差分 '+(v.remaining||0)+'件 / Gmail側のみ '+v.remoteOnly+'件';}catch(_){}if(/^completed=\d+$/.test(value))return '処理済み（変更なしを含む）'+value.split('=')[1]+'件';return value;}
   async function history(start=0,runId=''){
     const result=await rpc('history',{offset:start,runId});shell('実行ログ','実行日時・処理結果・エラーを新しい順に表示します。','history');if(runId)main.append(node('p','この実行のログを表示しています。実行ID: '+runId,'notice info'));const actions=node('div',null,'actions');add(actions,button('ログを更新',()=>history(start,runId)),button('操作に戻る',()=>showHome()));if(runId)actions.append(button('すべてのログ',()=>history(),'tertiary'));main.append(actions);

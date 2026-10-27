@@ -73,6 +73,7 @@ var GFMWeb = (function () {
         if(!owned(v)||v.viewId!==h.viewId||v.action!==h.action||v.runId!==h.runId||v.preparationId!==h.preparationId)throw Error('保存した表示の対応が一致しません');
         let result=v.result;
         if(h.preparationId){const current=d.state.get('filterPreparation');if(!owned(current)||current.preparationId!==h.preparationId)throw Error('別の確認準備が開始されています');result=readyPreparation(h.preparationId);}
+        if(h.action==='messagesPrepare'){const j=d.state.get('messageJob');if(!j||j.runId!==result.runId||j.revision!==result.revision)throw Error('既存メール処理の状態が変更されています。保存済みの状況を再確認してください');}
         const kind=h.action==='importCheck'?'webImport':h.action==='messagesPrepare'?'webMessageApproval':h.action==='prepare'||result.status==='READY'&&h.preparationId?'webApproval':'';
         if(kind){const approval=checked(kind,result.token);if(kind==='webApproval'&&!same(approval.ticket,d.state.get('prepared')))throw Error('確認が失効しました');}
         if(h.action==='preview'&&d.state.get('preview')?.runId!==h.runId)throw Error('別の差分確認が行われています');
@@ -119,7 +120,7 @@ var GFMWeb = (function () {
       if(a.action==='apply'&&d.jobs&&a.runId&&d.state.get('filterJob')?.runId===a.runId){result.status='DONE';result.result=d.jobs.status(a.runId);return result;}
       if(a.action==='apply'&&outcome?.actor===d.actor()&&outcome.bookId===d.bookId&&outcome.result.runId===a.runId&&outcome.result.status!=='UNKNOWN'){result.status='DONE';result.result=outcome.result;}
       if(a.action.startsWith('messages')){
-        const j=d.state.get('messageJob');if(j&&(j.runId===a.runId||a.action==='messagesStart'&&j.requestId===requestId)){result.runId=j.runId;result.messageJob={runId:j.runId,status:j.status,total:j.total,completed:j.completed,remaining:j.total-j.completed,uncertain:j.pending?.count||0,error:j.error||''};}
+        const j=d.state.get('messageJob');if(j&&(j.runId===a.runId||a.action==='messagesStart'&&j.requestId===requestId)){result.runId=j.runId;result.messageJob={runId:j.runId,status:j.status,total:j.total,totalKnown:!['SCANNING','SCAN_FAILED'].includes(j.status)&&j.rule===j.ruleCount,completed:j.completed,remaining:j.total-j.completed,uncertain:j.pending?.count||0,error:j.error||''};}
       }
       if(result.status==='RUNNING'&&now()-a.at>7*60*1000)result.status='UNKNOWN';
       return result;
