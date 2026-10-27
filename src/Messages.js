@@ -104,7 +104,7 @@ var GFMMessages = (function () {
       const ticket={runId,revision:j.revision,at:d.now(),nonce:d.uuid()};d.state.set('messageApproval',ticket);return ticket;
     }
     function apply(ticket) {
-      const saved=d.state.get('messageApproval');if(!saved||C.stable(saved)!==C.stable(ticket)||d.now()-ticket.at>15*60*1000)throw new Error('既存メール処理の確認が失効しました。再確認してください');
+      const saved=d.state.get('messageApproval');if(!saved||C.stable(saved)!==C.stable(ticket)||d.now()-ticket.at>=15*60*1000)throw new Error('既存メール処理の確認が失効しました。再確認してください');
       let j=jobFor(ticket.runId);if(j.revision!==ticket.revision||!['READY','PARTIAL','FAILED','RUNNING'].includes(j.status))throw new Error('既存メール処理の状態が変更されています');
       unchanged(j);d.state.remove('messageApproval');const startTime=d.now();
       // Intent persistence must succeed before entering the mutation loop.

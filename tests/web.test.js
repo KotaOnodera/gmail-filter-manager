@@ -49,7 +49,7 @@ test('label dependency shown at Web confirmation is applied exactly once through
 test('resume reads only the matching request while its mutation holds the operation lock',()=>{
  const f=fixture(),state=f.deps.state;let locked=false,inside;
  const d={...f.deps,bookId:'book',withLock(fn){if(locked)throw Error('locked');locked=true;try{return fn();}finally{locked=false;}},controller:{apply(ticket){inside=w.dispatch('resume',{requestId:'request-1'});return {status:'OK',completed:1,runId:ticket.runId};}}};
- const w=W.create(d);state.set('webApproval',{token:'approve',ticket:{runId:'run-1'},at:0,actor:'',bookId:'book'});
+ const w=W.create(d);state.set('prepared',{runId:'run-1'});state.set('webApproval',{token:'approve',ticket:{runId:'run-1'},at:0,actor:'',bookId:'book'});
  w.dispatch('apply',{token:'approve',_requestId:'request-1'});assert.equal(inside.status,'RUNNING');assert.equal(inside.runId,'run-1');
  d.gmail.read=()=>{throw Error('no Gmail');};d.store.readRows=()=>{throw Error('no rows');};
  assert.equal(w.dispatch('resume',{requestId:'request-1'}).result.status,'OK');assert.equal(w.dispatch('resume',{requestId:'other'}).status,'NOT_FOUND');assert.equal(f.writes.length,0);

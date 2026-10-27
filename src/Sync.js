@@ -172,7 +172,7 @@ var GFMSync = (function () {
       const prepared=d.state.get('prepared');
       if(!prepared||C.stable(ticket)!==C.stable(prepared))throw new Error('承認準備が失効しました。再プレビューしてください');
       if(!approved){clearPreview();log(ticket.runId,'APPLY',{result:'CANCELLED',snapshotId:ticket.snapshotId});return {status:'CANCELLED',completed:0};}
-      if(d.now()-prepared.preparedAt>15*60*1000)throw new Error('承認待ちが15分を超えました。再プレビューしてください');
+      if(d.now()-prepared.preparedAt>=15*60*1000)throw new Error('承認待ちが15分を超えました。再プレビューしてください');
       const current=checkedPreview();checkBackup(ticket.snapshotId,current.state);
       let keys=null;
       if(ticket.selection){keys=d.store.readScope(ticket.snapshotId);if(!Array.isArray(keys)||keys.length!==ticket.selection.count||digest(keys)!==ticket.selection.hash)throw new Error('保存済みの選択対象が一致しません');}

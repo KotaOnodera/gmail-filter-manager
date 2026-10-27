@@ -3,8 +3,24 @@ var GFMWeb = (function () {
   function create(d) {
     const now=()=>d.now();
     function page(input){return {offset:Math.max(0,Math.min(100000,Number.isSafeInteger(input.offset)?input.offset:0)),limit:20};}
-    function confirmation(kind,ticket){const token=d.uuid();d.state.set(kind,{token,ticket,at:now(),actor:d.actor(),bookId:d.bookId});return token;}
-    function checked(kind,token){const c=d.state.get(kind);if(!c||!token||c.token!==token||c.actor!==d.actor()||c.bookId!==d.bookId)throw new Error('確認が無効です。もう一度確認してください');if(now()-c.at>15*60*1000)throw new Error('確認の期限が切れました。もう一度確認してください');return c;}
+    const approvalTTL=15*60*1000;
+    const reasons={VALID:'確認は有効です。',EXPIRED:'確認の期限が切れました。内容を再確認してください。',CONFIG_CHANGED:'確認後に設定が変更されています。内容を再確認してください。',GMAIL_CHANGED:'確認後にGmailが変更されています。内容を再確認してください。',SUPERSEDED:'別の確認操作により確認が失効しました。内容を再確認してください。'};
+    function expiry(c){return Math.min(c.expiresAt===undefined?c.at+approvalTTL:c.expiresAt,c.at+approvalTTL,...[c.ticket.preparedAt,c.ticket.at].filter(Number.isFinite).map(t=>t+approvalTTL));}
+    function validity(c,reason){return {valid:reason==='VALID',reason,message:reasons[reason],expiresAt:c?expiry(c):null,serverNow:now()};}
+    function confirmationStatus(kind,token){
+      if(!['webApproval','webMessageApproval','webImport'].includes(kind))throw Error('確認の種類が不正です');
+      const c=d.state.get(kind);
+      if(!owned(c)||!token||c.token!==token)return validity(null,'SUPERSEDED');
+      if(kind==='webApproval'&&!same(c.ticket,d.state.get('prepared'))||kind==='webMessageApproval'&&d.state.get('messageApproval')&&!same(c.ticket,d.state.get('messageApproval')))return validity(c,'SUPERSEDED');
+      if(c.config&&c.config!==configHash())return validity(c,'CONFIG_CHANGED');
+      if(c.remote&&c.remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return validity(c,'GMAIL_CHANGED');
+      return validity(c,now()>=expiry(c)?'EXPIRED':'VALID');
+    }
+    function confirmation(kind,ticket,remote){
+      const at=now(),token=d.uuid(),c={token,ticket,at,expiresAt:Math.min(at+approvalTTL,...[ticket.preparedAt,ticket.at].filter(Number.isFinite).map(t=>t+approvalTTL)),actor:d.actor(),bookId:d.bookId,config:configHash(),remote:remote||d.hash(C.stable(C.remote(d.gmail.read())))};
+      d.state.set(kind,c);return {token,confirmation:validity(c,now()>=expiry(c)?'EXPIRED':'VALID')};
+    }
+    function checked(kind,token){const status=confirmationStatus(kind,token);if(!status.valid){const error=Error(status.message);error.confirmation=status;throw error;}return d.state.get(kind);}
     const viewActions=new Set(['preview','prepare','prepareStart','prepareRemaining','importCheck','messagesList','messagesPrepare']);
     const viewTTL=24*60*60*1000;
     const C=typeof module!=='undefined'?require('./Core'):GFMCore,L=typeof module!=='undefined'?require('./Labels'):GFMLabels;
@@ -43,7 +59,9 @@ var GFMWeb = (function () {
           if(Array.isArray(input.keys)){const saved=d.store.readWebView(source.pointer);if(!same(saved.keys,input.keys))updateView({...sourceView,keys:input.keys,revision:saved.revision+1});}
         }
       }
-      const data={viewId,action,runId:h.runId,sourceView,preparationId:h.preparationId,actor:h.actor,bookId:h.bookId,mode:input._viewMode==='SELECTED'||input.keys!==undefined?'SELECTED':'ALL',keys:input.keys||[],revision:0,result,config:configHash()};
+      let originalEntries=null;if(sourceView){const source=d.state.get('webView:'+sourceView.viewId);originalEntries=d.store.readWebView(source.pointer).result.entries||[];}
+      if(originalEntries&&Array.isArray(input.keys)){const chosen=originalEntries.filter(e=>input.keys.includes(e.ruleKey)),refs=new Set(chosen.flatMap(e=>[...(e.after?.action?.addLabelIds||[]),...(e.after?.action?.removeLabelIds||[])]));originalEntries=originalEntries.filter(e=>input.keys.includes(e.ruleKey)||e.kind==='LABEL'&&refs.has(e.after?.id||L.virtualId(e.labelKey)));}
+      const data={previousRunId:input.previousRunId||'',originalEntries,viewId,action,runId:h.runId,sourceView,preparationId:h.preparationId,actor:h.actor,bookId:h.bookId,mode:input._viewMode==='SELECTED'||input.keys!==undefined?'SELECTED':'ALL',keys:input.keys||[],revision:0,result,config:configHash()};
       h.pointer=d.store.writeWebView(viewId,data);d.state.set('webView:'+viewId,h);ids.push(viewId);d.state.set('webViewIndex',ids);return {...result,_view:locator(h)};
     }
     function readyPreparation(preparationId){
@@ -53,12 +71,15 @@ var GFMWeb = (function () {
       // replacement preparation and apply using the shared operation lock.
       return d.withLock(()=>{
         const p=d.jobs.prepareStatus(preparationId);if(p.status!=='READY')return p;
-        if(!same(p.ticket,d.state.get('prepared'))||now()-p.ticket.preparedAt>15*60*1000)throw Error('確認が失効しました。差分を再取得してください');
+        if(!same(p.ticket,d.state.get('prepared')))throw Error('確認が失効しました。差分を再取得してください');
         const captured=d.store.readJobData(p.ticket.jobApproval);
         if(configHash(captured.rows,captured.labelRows)!==configHash())throw Error('確認後に設定が変更されています。差分を再取得してください');
         const old=d.state.get('webApproval');
-        if(old&&old.ticket.runId===p.ticket.runId){checked('webApproval',old.token);return {...p,...p.ticket,token:old.token};}
-        return {...p,...p.ticket,token:confirmation('webApproval',p.ticket)};
+        const remote=d.hash(C.stable(C.remote(captured.state)));
+        if(!old&&remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'GMAIL_CHANGED')};
+        if(old&&old.ticket.runId===p.ticket.runId)return {...p,...p.ticket,token:old.token,confirmation:confirmationStatus('webApproval',old.token)};
+        if(now()>=p.ticket.preparedAt+approvalTTL)return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'EXPIRED')};
+        return {...p,...p.ticket,...confirmation('webApproval',p.ticket,remote)};
       });
     }
     function loadView(input){
@@ -68,21 +89,59 @@ var GFMWeb = (function () {
       if(input.runId&&input.runId!==h.runId)throw Error('保存した表示の実行IDが一致しません');
       const job=d.state.get('filterJob');if(d.jobs&&owned(job)&&(h.preparationId&&job.ticket?.jobApproval?.runId===h.preparationId||h.action==='prepare'&&h.runId===job.runId))return {status:'JOB',result:d.jobs.status(job.runId)};
       if(now()-h.at>viewTTL)return {status:'EXPIRED',action:h.action};
+      let v,result;
       try{
-        const v=d.store.readWebView(h.pointer);
+        v=d.store.readWebView(h.pointer);
         if(!owned(v)||v.viewId!==h.viewId||v.action!==h.action||v.runId!==h.runId||v.preparationId!==h.preparationId)throw Error('保存した表示の対応が一致しません');
-        let result=v.result;
+        result=v.result;
         if(h.preparationId){const current=d.state.get('filterPreparation');if(!owned(current)||current.preparationId!==h.preparationId)throw Error('別の確認準備が開始されています');result=readyPreparation(h.preparationId);}
         if(h.action==='messagesPrepare'){const j=d.state.get('messageJob');if(!j||j.runId!==result.runId||j.revision!==result.revision)throw Error('既存メール処理の状態が変更されています。保存済みの状況を再確認してください');}
         const kind=h.action==='importCheck'?'webImport':h.action==='messagesPrepare'?'webMessageApproval':h.action==='prepare'||result.status==='READY'&&h.preparationId?'webApproval':'';
-        if(kind){const approval=checked(kind,result.token);if(kind==='webApproval'&&!same(approval.ticket,d.state.get('prepared')))throw Error('確認が失効しました');}
+        if(kind){result={...result,confirmation:result.confirmation||confirmationStatus(kind,result.token)};const status=h.preparationId&&result.confirmation?result.confirmation:confirmationStatus(kind,result.token);if(!status.valid){const e=Error(status.message);e.confirmation=result.confirmation&&!result.confirmation.valid?result.confirmation:status;throw e;}result.confirmation=status;}
         if(h.action==='preview'&&d.state.get('preview')?.runId!==h.runId)throw Error('別の差分確認が行われています');
         if(!h.preparationId&&v.config!==configHash())throw Error('設定が変更されています。再確認してください');
         if(h.action==='messagesPrepare'&&d.state.get('messageJob')&&d.state.get('messageJob').runId!==result.runId)throw Error('既存メールの実行IDが変更されています');
         const validKeys=new Set((result.entries||[]).filter(e=>(e.ruleKey||e.key)&&e.operation!=='ERROR'&&e.eligible!==false&&!e.errors?.length).map(e=>e.ruleKey||e.key));
         if(!Array.isArray(v.keys)||v.keys.some(k=>!validKeys.has(k))&&(!h.preparationId||result.status==='READY'))throw Error('保存した選択対象が一致しません');
         return {status:'OK',...locator(h),sourceView:v.sourceView||null,mode:v.mode,keys:v.keys,revision:v.revision,result:{...result,_view:locator(h)}};
-      }catch(e){return {status:'INVALID',action:h.action,error:'保存した画面を使用できません。再確認または取得し直してください。 '+String(e.message||e).slice(0,200)};}
+      }catch(e){
+        const reason=e.confirmation?.reason||(/設定/.test(e.message)?'CONFIG_CHANGED':/Gmail|ラベル/.test(e.message)?'GMAIL_CHANGED':/期限/.test(e.message)?'EXPIRED':'SUPERSEDED');
+        if(h.preparationId&&(!result?.entries)){try{const p=d.jobs.prepareStatus(h.preparationId);if(p.status==='READY')result={...p,...p.ticket};}catch(_){}}
+        const confirmation=e.confirmation||{...validity(null,reason),expiresAt:result?.confirmation?.expiresAt||((result?.preparedAt!==undefined)?result.preparedAt+approvalTTL:null)};
+        return {status:'INVALID',...locator(h),mode:v?.mode,keys:v?.keys||[],sourceView:v?.sourceView||null,confirmation,result:result?{...result,confirmation,_view:locator(h)}:null,error:'保存した画面を使用できません。再確認または取得し直してください。 '+String(e.message||e).slice(0,200)};}
+    }
+    function reconfirm(input){
+      const h=d.state.get('webView:'+input.viewId);if(!owned(h)||h.quarantinedAt!==undefined||now()-h.at>viewTTL)throw Error('保存した確認を検証できません。取得し直してください');
+      const v=d.store.readWebView(h.pointer);if(!owned(v)||v.viewId!==h.viewId||v.action!==h.action||v.runId!==h.runId||input.runId&&input.runId!==h.runId)throw Error('保存した確認の対応が一致しません');
+      const job=d.state.get('filterJob');if(d.jobs&&owned(job)&&(h.preparationId&&job.ticket?.jobApproval?.runId===h.preparationId||h.action==='prepare'&&job.runId===h.runId))return {status:'JOB',result:d.jobs.status(job.runId)};
+      let action,result,keys=v.keys||[],original=v.originalEntries||v.result.entries||[],mode=v.mode;
+      if(h.action==='importCheck'){action='importCheck';const ticket=d.controller.importAll(false);result={count:ticket.count,total:ticket.total,labelCount:ticket.labelCount,labelTotal:ticket.labelTotal,...confirmation('webImport',ticket)};}
+      else if(h.action==='messagesPrepare'){
+        const j=d.state.get('messageJob');if(!j||j.runId!==h.runId)throw Error('別の既存メール処理が開始されています。保存済みの状況を確認してください');
+        if(['OK','CANCELLED'].includes(j.status))return {status:'MESSAGE_JOB',result:d.messages.status(j.runId)};
+        keys=(v.result.entries||[]).map(e=>e.key);mode='SELECTED';
+        // Keep saved message IDs/counts when definitions still match. Changed
+        // definitions require an explicit fresh search; never mix old IDs with new actions.
+        try{const ticket=d.messages.prepare(h.runId);action='messagesPrepare';result={...d.messages.status(h.runId),...confirmation('webMessageApproval',ticket)};}
+        catch(e){if(!/定義|ラベル.*変更/.test(e.message))throw e;d.messages.cancel(h.runId);d.state.remove('webMessageApproval');action='messagesList';result=d.messages.list();}
+      }else if(['prepare','prepareStart','prepareRemaining','preview'].includes(h.action)){
+        const previousRunId=v.previousRunId||(h.action==='prepareRemaining'?h.runId:'');
+        if(previousRunId){
+          if(!owned(job)||job.runId!==previousRunId)throw Error('元のジョブが変更されています。保存済みの状況を確認してください');
+          const a=d.store.readJobData(job.ticket.jobApproval),sourceId=(d.state.get('webViewIndex')||[]).find(id=>{const source=d.state.get('webView:'+id);return owned(source)&&(source.preparationId&&source.preparationId===job.ticket.jobApproval.runId||source.action==='prepare'&&source.runId===job.runId);}),source=sourceId?d.store.readWebView(d.state.get('webView:'+sourceId).pointer):null;
+          keys=source?.mode==='SELECTED'?source.keys:a.keys;mode='SELECTED';original=a.entries;
+        }
+        d.state.remove('webApproval');action='preview';result={...d.controller.preview(),...(previousRunId?{previousRunId}:{})};
+      }else throw Error('この画面からは再確認できません');
+      const entryKey=e=>e.ruleKey||e.key,available=new Map((result.entries||[]).map(e=>[entryKey(e),e])),before=new Map(original.map(e=>[entryKey(e),e]));
+      const relevant=mode==='ALL'?[...before.keys()]:[...new Set([...keys,...original.filter(e=>e.kind==='LABEL').map(entryKey)])];
+      const missing=relevant.filter(k=>!available.has(k)),invalid=relevant.filter(k=>available.has(k)&&(available.get(k).errors?.length||available.get(k).eligible===false||available.get(k).operation==='ERROR'));
+      const definition=e=>({operation:e.operation,before:e.before,after:e.after,filter:e.filter,action:e.action,errors:e.errors});
+      const changed=[...before.keys()].filter(k=>available.has(k)&&!same(definition(before.get(k)),definition(available.get(k)))) ;
+      keys=keys.filter(k=>available.has(k)&&!invalid.includes(k));
+      const changes={missing,invalid,changed};result={...result,reconfirmation:changes};
+      result=saveView(action,{_viewMode:mode,...(mode==='SELECTED'?{keys}:{})},result);
+      return {status:'OK',action,mode,keys,changes,result};
     }
     function updateView(input){
       const restored=loadView(input);if(restored.status!=='OK')return restored;
@@ -93,7 +152,7 @@ var GFMWeb = (function () {
       if(!Array.isArray(input.keys)||input.keys.length>10000||new Set(input.keys).size!==input.keys.length||input.keys.some(k=>!valid.has(k)))throw Error('選択対象が一致しません');
       const pointer=d.store.writeWebView(h.viewId,{...v,keys:input.keys,revision:input.revision});d.state.set('webView:'+h.viewId,{...h,pointer});d.store.removeWebView(h.pointer);return {status:'OK'};
     }
-    const trackedActions=new Set(['importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
+    const trackedActions=new Set(['reconfirm','importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
     function saveActivity(activity){
       const index=d.state.get('webActivityIndex')||[];if(!Array.isArray(index))throw Error('実行状況の索引が破損しています');
       const key='webActivity:'+activity.requestId;d.state.set(key,activity);
@@ -106,7 +165,7 @@ var GFMWeb = (function () {
       const activity={requestId,action,runId:input.runId||approval?.ticket?.runId||'',status:'RUNNING',at:now(),actor:d.actor(),bookId:d.bookId};
       saveActivity(activity);
       try{
-        const result=saveView(action,input,fn()),record={...activity,status:'DONE',runId:result?.runId||activity.runId,finishedAt:now(),preparationId:result?.preparationId||'',viewId:result?._view?.viewId||''};
+        const result=saveView(action,input,fn()),record={...activity,status:'DONE',runId:result?.runId||result?.result?.runId||activity.runId,finishedAt:now(),preparationId:result?.preparationId||'',viewId:result?._view?.viewId||result?.result?._view?.viewId||''};
         if(action==='apply'||action==='import')record.result={...result,error:result.error?String(result.error).slice(0,1500):undefined};
         saveActivity(record);return result;
       }catch(err){saveActivity({...activity,status:'ERROR',error:String(err.message||err).slice(0,1500),finishedAt:now()});throw err;}
@@ -130,6 +189,8 @@ var GFMWeb = (function () {
       // Read only small owner-scoped checkpoints; status must remain available while a write owns the lock.
       if(action==='resume')return resume(input.requestId);
       if(action==='viewGet')return loadView(input);
+      if(action==='confirmationStatus')return d.withLock(()=>confirmationStatus(input.kind,input.token));
+      if(action==='reconfirm')return d.withLock(()=>tracked(action,input,()=>reconfirm(input)));
       if(action==='viewUpdate')return d.withLock(()=>updateView(input));
       if(action==='boot'){const last=d.state.get('webOutcome');return {filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
       if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
@@ -144,7 +205,7 @@ var GFMWeb = (function () {
         if(action==='messagesStatus')return d.messages.status(input.runId);
         if(action==='messagesCancel'){d.state.remove('webMessageApproval');return d.messages.cancel(input.runId);}
         if(action==='messagesPrepare'){
-          const ticket=d.messages.prepare(input.runId);return {...d.messages.status(input.runId),token:confirmation('webMessageApproval',ticket)};
+          const ticket=d.messages.prepare(input.runId);return {...d.messages.status(input.runId),...confirmation('webMessageApproval',ticket)};
         }
         if(action==='messagesApply'){
           const receipt=d.state.get('webMessageReceipt');
@@ -153,12 +214,12 @@ var GFMWeb = (function () {
           d.state.set('webMessageReceipt',{token:input.token,runId:c.ticket.runId,actor:d.actor(),bookId:d.bookId});
           return d.messages.apply(c.ticket);
         }
-        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,labelCount:ticket.labelCount,labelTotal:ticket.labelTotal,token:confirmation('webImport',ticket)};}
+        if(action==='importCheck'){const ticket=d.controller.importAll(false);return {count:ticket.count,total:ticket.total,labelCount:ticket.labelCount,labelTotal:ticket.labelTotal,...confirmation('webImport',ticket)};}
         if(action==='import'){const c=checked('webImport',input.token);d.state.remove('webImport');return d.controller.importAll(true,c.ticket);}
         if(action==='preview'){d.state.remove('webApproval');const result=d.controller.preview();return result;}
         if(action==='prepare'){
           const preview=d.state.get('preview');if(!preview||!input.runId||input.runId!==preview.runId)throw new Error('別の変更確認が行われました。差分を再確認してください');
-          const view=d.controller.prepareView(input.keys),ticket=view.ticket;return {...ticket,entries:view.entries,labels:view.labels,token:confirmation('webApproval',ticket)};
+          const view=d.controller.prepareView(input.keys),ticket=view.ticket;return {...ticket,entries:view.entries,labels:view.labels,...confirmation('webApproval',ticket)};
         }
         if(action==='apply'){
           const last=d.state.get('webOutcome');if(last&&input.token===last.token&&last.actor===d.actor()&&last.bookId===d.bookId)return d.jobs&&last.result.job?d.jobs.status(last.result.runId):last.result;

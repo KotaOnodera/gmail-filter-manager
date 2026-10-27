@@ -16,7 +16,7 @@
   function setBusy(value){
     working=value;$('busy').hidden=!value;
     if(value){main.setAttribute('aria-busy','true');disabledControls=[...document.querySelectorAll('button,input,select,textarea')].map(el=>[el,el.disabled]);disabledControls.forEach(([el])=>el.disabled=true);}
-    else{main.removeAttribute('aria-busy');disabledControls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});disabledControls=[];}
+    else{main.removeAttribute('aria-busy');disabledControls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});disabledControls=[];if(activeConfirmation){const c=activeConfirmation;c.apply.disabled=!c.valid||!!c.check&&!c.check.checked;if(c.check)c.check.disabled=!c.valid;}}
   }
   function getStorage(){try{return window.sessionStorage;}catch(_){return undefined;}}
   const session=GFMClientSession.create({request:rawRpc,onBusy:setBusy,storage:getStorage(),isVisible:()=>!document.hidden,
@@ -32,6 +32,52 @@
   function rpc(command,input={}){return session.call(command,input);}
   function readWithDeadline(command,input){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('状況確認がタイムアウトしました。再確認できます。')),10000);rawRpc(command,input).then(v=>{clearTimeout(timer);resolve(v);},e=>{clearTimeout(timer);reject(e);});});}
   function rememberView(view){if(view){currentView=view;session.remember(view);}}
+  let activeConfirmation=null,confirmationTimer=null,confirmationPoll=null,confirmationRead=0;
+  function forgetConfirmation(){clearTimeout(confirmationTimer);clearTimeout(confirmationPoll);activeConfirmation=null;confirmationRead++;}
+  function freezeConfirmation(c){c.valid=false;if(c.check){c.check.checked=false;c.check.disabled=true;}c.apply.disabled=true;}
+  function updateConfirmation(c,status){
+    if(activeConfirmation!==c)return;
+    status={...status,expiresAt:status?.expiresAt??c.status?.expiresAt??c.p.confirmation?.expiresAt};c.status=status;c.valid=!!status?.valid&&!document.hidden;
+    const deadline=Number.isFinite(status?.expiresAt)?new Date(status.expiresAt).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false})+'（日本時間）':'確認できません';
+    c.text.textContent='有効期限: '+deadline+' / '+(status?.message||(c.valid?'有効':'確認が必要です。内容を再確認してください。'));
+    c.text.className='notice '+(c.valid?'info':'warning');
+    if(c.check)c.check.disabled=!c.valid;c.apply.disabled=!c.valid||!!c.check&&!c.check.checked;
+    clearTimeout(confirmationTimer);clearTimeout(confirmationPoll);
+    if(c.valid){
+      // Use server remaining duration, never compare expiry against the device's clock.
+      confirmationTimer=setTimeout(()=>{if(activeConfirmation===c){freezeConfirmation(c);c.text.textContent='有効期限をサーバーで再確認しています。';if(!document.hidden)refreshConfirmation(c);}},Math.max(0,status.expiresAt-status.serverNow));
+      confirmationPoll=setTimeout(()=>{if(!document.hidden&&activeConfirmation===c)refreshConfirmation(c);},60000);
+    }
+  }
+  async function refreshConfirmation(c=activeConfirmation,manual=false){
+    if(!c||working&&!manual)return;const epoch=viewEpoch,sequence=++confirmationRead;freezeConfirmation(c);c.text.textContent='有効期限と最新の設定をサーバーで確認しています。';
+    try{const status=!c.p.token&&c.p.preparationId?(await readWithDeadline('prepareStatus',{preparationId:c.p.preparationId})).confirmation:await readWithDeadline('confirmationStatus',{kind:c.kind,token:c.p.token});if(activeConfirmation===c&&epoch===viewEpoch&&sequence===confirmationRead)updateConfirmation(c,status);}
+    catch(e){if(activeConfirmation===c&&epoch===viewEpoch&&sequence===confirmationRead){c.text.textContent='確認状態を取得できませんでした。「確認状態を更新」または「内容を再確認」を選んでください。';}}
+  }
+  async function approvedRequest(command,input){
+    const c=activeConfirmation;
+    try{return await rpc(command,input);}
+    catch(e){
+      if(c===activeConfirmation&&/確認.*期限|確認.*失効|確認後に|定義.*変更|別の確認|承認準備/.test(e.message||'')){
+        pendingApplyRunId='';pendingMessageRunId='';freezeConfirmation(c);await refreshConfirmation(c,true);message(e.message,'warning');return null;
+      }
+      throw e;
+    }
+  }
+  async function reconfirmContent(c){
+    const view=c.p._view||currentView;
+    if(!view){if(c.kind==='webImport')return importCheck();if(c.kind==='webMessageApproval')return prepareMessages(c.p.runId);return loadPreview(mode);}
+    const fresh=await rpc('reconfirm',view);
+    if(fresh.status==='MESSAGE_JOB'){renderMessageStatus(fresh.result);return;}
+    renderSavedView(fresh);
+
+  }
+  function confirmationControls(p,kind,apply,check=null){
+    const text=node('p','','notice info'),c={p,kind,apply,check,text,valid:false};activeConfirmation=c;
+    if(check)check.addEventListener('change',()=>{apply.disabled=!c.valid||!check.checked;});
+    add(main,text,button('内容を再確認',()=>reconfirmContent(c)),button('確認状態を更新',()=>refreshConfirmation(c,true),'tertiary'));
+    updateConfirmation(c,p.confirmation||{valid:false,message:'有効期限を確認してください。'});
+  }
   function saveSelection(){
     if(!currentView)return;const epoch=viewEpoch;
     rawRpc('viewUpdate',{...currentView,keys:[...selected],revision:++selectionRevision}).then(r=>{if(epoch===viewEpoch&&r.status!=='OK'&&r.status!=='STALE')message('選択内容を保存できませんでした。再読み込み前に保存済み画面を確認してください。','warning');}).catch(()=>{if(epoch===viewEpoch)message('選択内容を保存できませんでした。選択し直して再保存できます。','warning');});
@@ -43,7 +89,9 @@
   }
   function renderSavedView(saved){
     if(saved.status==='JOB'){session.forgetView();currentView=null;renderFilterJob(saved.result);return;}
-    if(saved.status!=='OK'){retrySavedView(saved.action,saved.error);return;}
+    if(saved.status!=='OK'&&!(saved.status==='INVALID'&&saved.result?.confirmation&&(['importCheck','messagesPrepare','prepare'].includes(saved.action)||saved.result.status==='READY'))){
+      retrySavedView(saved.action,saved.error);
+      if(saved.status==='INVALID'&&saved.viewId){const c={p:{_view:saved},kind:'webApproval'};main.append(button('内容を再確認',()=>reconfirmContent(c)));}return;}
     if(['prepare','prepareStart','prepareRemaining'].includes(saved.action))confirmationSource=saved.sourceView||null;
     mode=saved.mode||'ALL';selected=new Set(saved.keys||[]);selectionRevision=saved.revision||0;rememberView(saved.result?._view||saved);const r=saved.result;
     if(saved.action==='preview'){preview=r;labels=r.labels||[];renderPreview();}
@@ -52,6 +100,7 @@
     else if(saved.action==='importCheck')renderImportCheck(r);
     else if(saved.action==='messagesList')renderMessagesList(r);
     else if(saved.action==='messagesPrepare')renderMessagesConfirmation(r);
+    const changes=saved.changes||r.reconfirmation;if(changes){const notices=[];for(const [field,label]of [['missing','消失した対象'],['invalid','適用できなくなった対象'],['changed','変更された対象・依存ラベル']])if(changes[field]?.length)notices.push(node('p',label+': '+changes[field].join('、'),'notice warning'));const content=[...main.childNodes];main.replaceChildren(...content.slice(0,2),...notices,...content.slice(2));}
   }
   async function loadSavedView(view){
     const epoch=viewEpoch;
@@ -103,8 +152,8 @@
     finally{if(view.refresh.isConnected&&sequence===recoveryRead)view.refresh.disabled=false;}
   }
   function navigation(page){document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
-  function shell(title,lead,page='home'){clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';main.replaceChildren(node('h1',title),node('p',lead,'lead'));navigation(page);main.focus();window.scrollTo(0,0);}
-  function showHome(focus=true){clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
+  function shell(title,lead,page='home'){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';main.replaceChildren(node('h1',title),node('p',lead,'lead'));navigation(page);main.focus();window.scrollTo(0,0);}
+  function showHome(focus=true){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
     main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));navigation('home');
     const handlers={import:importCheck,all:()=>loadPreview('ALL'),selected:()=>loadPreview('SELECTED'),history:()=>history(),messages:messagesList};
     for(const b of main.querySelectorAll('[data-command]'))b.addEventListener('click',action(handlers[b.dataset.command]));
@@ -140,7 +189,8 @@
   }
   async function importCheck(){renderImportCheck(await rpc('importCheck'));}
   function renderImportCheck(check){rememberView(check._view);shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターとラベルをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。ラベル全'+(check.labelTotal||0)+'件 / 未登録'+(check.labelCount||0)+'件。既存の編集内容は維持します。','notice info'));
-    const actions=node('div',null,'actions');add(actions,button('フィルター'+check.count+'件・ラベル'+(check.labelCount||0)+'件をインポート',async()=>{const r=await rpc('import',{token:check.token});preview=null;shell('インポート完了','フィルター'+r.count+'件・ラベル'+(r.labelCount||0)+'件を追加しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));},''),button('キャンセル',()=>showHome()));main.append(actions);
+    const label=node('label',null,'check-confirm'),approval=node('input');approval.type='checkbox';add(label,approval,node('span','上記の取り込み内容を確認しました'));main.append(label);
+    const actions=node('div',null,'actions'),apply=button('フィルター'+check.count+'件・ラベル'+(check.labelCount||0)+'件をインポート',async()=>{if(!activeConfirmation?.valid)throw Error('内容を再確認してください');if(!approval.checked)throw Error('取り込み内容を確認してください');const r=await approvedRequest('import',{token:check.token});if(!r)return;preview=null;shell('インポート完了','フィルター'+r.count+'件・ラベル'+(r.labelCount||0)+'件を追加しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));},'');add(actions,apply,button('キャンセル',()=>showHome()));main.append(actions);confirmationControls(check,'webImport',apply,approval);
   }
   async function loadPreview(nextMode){mode=nextMode;selected=new Set();preview=await rpc('preview',{_viewMode:mode});rememberView(preview._view);selectionRevision=0;labels=preview.labels||[];renderPreview();}
   function renderPreview(){rememberView(preview._view);
@@ -157,7 +207,7 @@
   }
   async function prepare(){
     confirmationSource=preview._view||null;
-    const p=await rpc('prepareStart',{runId:preview.runId,_viewMode:mode,_sourceViewId:preview._view?.viewId,...(mode==='SELECTED'?{keys:[...selected]}:{})});renderPreparation(p);
+    const p=await rpc('prepareStart',{runId:preview.previousRunId?'':preview.runId,...(preview.previousRunId?{previousRunId:preview.previousRunId}:{}),_viewMode:mode,_sourceViewId:preview._view?.viewId,...(mode==='SELECTED'?{keys:[...selected]}:{})});renderPreparation(p);
   }
   function renderPreparation(result){
     savedPreparation=result;rememberView(result._view);
@@ -170,10 +220,10 @@
   async function loadPreparation(preparationId){const epoch=viewEpoch;try{const r=await readWithDeadline('prepareStatus',{preparationId});if(epoch===viewEpoch)renderPreparation(r);}catch(e){if(epoch===viewEpoch)retrySavedView('prepareStart',e.message);}}
   function renderConfirmation(p){rememberView(p._view);labels=p.labels||labels;
 
-    shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。確認の有効期限は15分です。','notice info'));
+    shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。最終承認までの有効期限を確認してください。','notice info'));
     if(p.entries.some(e=>e.kind!=='LABEL'&&e.operation==='REPLACE'))main.append(node('p','更新時は、一時的に新旧のフィルターが同時に有効になります。転送などが重複する場合があります。','notice warning'));if(p.summary.TRASH||p.summary.FORWARD)main.append(node('p','ゴミ箱への移動 '+p.summary.TRASH+'件 / 転送 '+p.summary.FORWARD+'件を含みます。','notice warning'));
     main.append(cards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','上記の変更内容を確認しました'));
-    const apply=button(p.selection?'選択した変更をGmailに適用':'全部Gmailに適用',async()=>{if(!check.checked)throw Error('変更内容の確認にチェックしてください');pendingApplyRunId=p.runId;const result=await rpc('apply',{token:p.token});renderOutcome(result);await acknowledge(result.runId);},'');apply.disabled=true;check.addEventListener('change',()=>{apply.disabled=!check.checked;});add(main,label,apply,node('p','バックアップID: '+p.snapshotId,'count'),button('差分に戻る',async()=>{if(preview)renderPreview();else if(confirmationSource)await loadSavedView(confirmationSource);else retrySavedView('preview','元の差分表示が見つかりません。「取得し直す」で最新の差分を確認してください。');},'tertiary'));
+    const apply=button(p.selection?'選択した変更をGmailに適用':'全部Gmailに適用',async()=>{if(!activeConfirmation?.valid||!check.checked)throw Error('変更内容の確認にチェックしてください');pendingApplyRunId=p.runId;const result=await approvedRequest('apply',{token:p.token});if(!result)return;renderOutcome(result);await acknowledge(result.runId);},'');apply.disabled=true;add(main,label,apply,node('p','バックアップID: '+p.snapshotId,'count'),button('差分に戻る',async()=>{if(preview)renderPreview();else if(confirmationSource)await loadSavedView(confirmationSource);else retrySavedView('preview','元の差分表示が見つかりません。「取得し直す」で最新の差分を確認してください。');},'tertiary'));confirmationControls(p,'webApproval',apply,check);
   }
   async function acknowledge(runId){try{await rpc('acknowledgeOutcome',{runId});}catch(_){/* The saved result remains available on reload. */}}
   function showUnknown(runId,error){pendingApplyRunId='';preview=null;shell('適用結果を確認してください','通信が途切れたため、結果が分かりません。処理は完了している可能性があります。');main.append(node('p','適用を自動再実行しません。保存済みの結果か実行ログを確認してください。','notice warning'),node('p','実行ID: '+runId,'count'));if(error?.message)main.append(node('p',error.message,'muted'));add(main,button('保存済みの結果を確認',async()=>{const r=await rpc('outcome',{runId});if(r.status==='UNKNOWN')await history(0,runId);else{renderOutcome(r);await acknowledge(runId);}},''),button('この実行のログ',()=>history(0,runId)));}
@@ -266,13 +316,13 @@
     renderMessagesConfirmation(await rpc('messagesPrepare',{runId}));
   }
   function renderMessagesConfirmation(p){const runId=p.runId;rememberView(p._view);labels=p.labels||labels;
-    shell('既存メールへの適用を確認','保存済みの対象メールへ、以下の3種類の処理だけを実行します。確認の有効期限は15分です。');
+    shell('既存メールへの適用を確認','保存済みの対象メールへ、以下の3種類の処理だけを実行します。最終承認までの有効期限を確認してください。');
     main.append(node('p','対象 延べ'+p.total+'件 / 処理済み '+p.completed+'件 / 未処理 '+p.remaining+'件','selection-count'));
     if(p.uncertain)main.append(node('p','結果不明 '+p.uncertain+'件は、保存済みの同じメールへ再適用します。','notice warning'));
     main.append(messageCards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','既存メールの変更内容と対象外の処理を確認しました'));
-    const apply=button('確認した既存メールを処理する',async()=>{if(!check.checked)throw Error('既存メールの変更内容を確認してください');pendingMessageRunId=runId;renderMessageStatus(await rpc('messagesApply',{token:p.token}));},'');
-    apply.disabled=true;check.addEventListener('change',()=>{apply.disabled=!check.checked;});
-    add(main,label,apply,node('p','大量の対象は小分けに処理します。途中で画面を閉じても、操作画面から保存済みの状況を確認できます。','muted'),button('状況に戻る',()=>loadMessageStatus(runId),'tertiary'));
+    const apply=button('確認した既存メールを処理する',async()=>{if(!activeConfirmation?.valid||!check.checked)throw Error('既存メールの変更内容を確認してください');pendingMessageRunId=runId;const result=await approvedRequest('messagesApply',{token:p.token});if(result)renderMessageStatus(result);},'');
+    apply.disabled=true;
+    add(main,label,apply,node('p','大量の対象は小分けに処理します。途中で画面を閉じても、操作画面から保存済みの状況を確認できます。','muted'),button('状況に戻る',()=>loadMessageStatus(runId),'tertiary'));confirmationControls(p,'webMessageApproval',apply,check);
   }
   function showMessageUnknown(runId,error){
     pendingMessageRunId='';shell('既存メールの結果を確認してください','通信が途切れました。処理は進んでいる可能性があります。保存済みの状況を確認してください。');
@@ -288,8 +338,8 @@
     if(result.total>20){const pager=node('div',null,'pagination');if(start>0)pager.append(button('前の20件',()=>history(start-20,runId)));pager.append(node('p',(start+1)+'〜'+Math.min(start+20,result.total)+' / '+result.total+'件','count'));if(start+20<result.total)pager.append(button('次の20件',()=>history(start+20,runId)));main.append(pager);}if(runId)await acknowledge(runId);
   }
   for(const b of document.querySelectorAll('[data-page]'))b.addEventListener('click',action(()=>b.dataset.page==='home'?showHome():history()));
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden){session.resume();if(activeFilterView)rawRpc('filterJobStatus',{runId:activeFilterView}).then(renderFilterJob).catch(()=>{});}});
-  window.addEventListener('pageshow',event=>{if(event.persisted)session.resume();});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){confirmationRead++;if(activeConfirmation)freezeConfirmation(activeConfirmation);}else{session.resume();refreshConfirmation();if(activeFilterView)rawRpc('filterJobStatus',{runId:activeFilterView}).then(renderFilterJob).catch(()=>{});}});
+  window.addEventListener('pageshow',event=>{if(event.persisted){session.resume();refreshConfirmation();}});
   // Operations are visible before any service call. Bootstrap reads only saved outcome state.
   showHome(false);
   const restoredRequest=session.restore();
