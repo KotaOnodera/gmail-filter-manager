@@ -3,8 +3,11 @@
 var GFMClientSession=(function(){
   'use strict';
   function create(d){
-    const key='gfm.pendingRequest.v1',tracked=new Set(['importCheck','import','preview','prepare','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
-    const readable=new Set(['importCheck','preview','prepare','messagesList','messagesPrepare']);
+    const key='gfm.pendingRequest.v1',tracked=new Set(['importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
+    const readable=new Set(['importCheck','preview','prepare','prepareStart','prepareRemaining','messagesList','messagesPrepare']);
+    const viewKey='gfm.savedView.v1';
+    function remember(view){if(!view||typeof view.viewId!=='string')return;try{d.storage?.setItem(viewKey,JSON.stringify({viewId:view.viewId,runId:view.runId||'',action:view.action||''}));}catch(_){}}
+    function viewLocator(){try{const v=JSON.parse(d.storage?.getItem(viewKey)||'null');return v&&typeof v.viewId==='string'&&v.viewId.length<=128?v:null;}catch(_){return null;}}
     let active=null,recovery=null,returning=null,serial=0;
     const stale=()=>new Error('画面を復元したため、古い応答は使用しません');
     function save(req){try{d.storage?.setItem(key,JSON.stringify(req));}catch(_){/* Storage may be disabled in an embedded browser. */}}
@@ -26,14 +29,14 @@ var GFMClientSession=(function(){
       try{
         const result=await d.request(command,shouldTrack?{...input,_requestId:req.requestId}:input);
         if(ctx&&active!==ctx){if(returning!==ctx)throw stale();active=ctx;returning=null;recovery=null;d.onRecoveredResponse?.(req);}
-        if(shouldTrack)clear(req);return result;
+        if(shouldTrack)clear(req);if(result?._view)remember(result._view);return result;
       }catch(err){if(ctx&&returning===ctx){returning=null;d.onRecover(req);}throw err;
       }finally{if(ctx&&ctx.request===req&&ctx.timer){clearTimeout(ctx.timer);ctx.timer=null;}}
     }
     function restore(){
       try{const req=JSON.parse(d.storage?.getItem(key)||'null');if(!req||!tracked.has(req.command)||typeof req.requestId!=='string'||!req.requestId||req.requestId.length>128)return false;recovery=req;d.onRecover(req);return true;}catch(_){return false;}
     }
-    return {run,call,resume,restore,isRecovery:req=>recovery===req&&!active,waitingResponse:req=>recovery===req&&!!returning,finish:req=>{if(recovery===req){clear(req);recovery=null;returning=null;}}};
+    return {run,call,resume,restore,remember,viewLocator,forgetView:()=>{try{d.storage?.removeItem(viewKey);}catch(_){}},isRecovery:req=>recovery===req&&!active,waitingResponse:req=>recovery===req&&!!returning,finish:req=>{if(recovery===req){clear(req);recovery=null;returning=null;}}};
   }
   return {create};
 })();

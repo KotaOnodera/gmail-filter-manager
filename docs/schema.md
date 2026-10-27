@@ -95,3 +95,6 @@ BackupのKind=SCOPEは、同じSnapshotIdのバックアップに結び付いた
 ## Issue #5 の承認・ジョブデータ
 
 新しいシートは追加しません。Backupの既存のハッシュ付き分割保存形式を使い、承認済み定義・大きな元JSON・スコープ・実行チェックポイントを追記します。`MESSAGES` Kindは共通の分割データ搬送形式でも使います。Script Propertiesは小さなポインターと所有者・対象ブック・ステージ・件数・期限のみです。メタデータ更新意図は更新前に保存し、応答消失を照合してからCOMMITします。保管量と保持については[バックグラウンドジョブ](background-jobs.md)を参照してください。
+
+
+Web表示保存のKind=WEB_VIEWは一時的な表示データです。SnapshotIdのwebview-接頭辞、GmailFilterIdの固有データID、Part/Parts/Hashと、JSON内の所有者・ブック・画面ID・操作・RunIdを照合します。24時間／直近12表示、1表示200万文字まで。GFM:webViewIndexには画面IDだけ、GFM:webView:<ID>には小さな所有者付きヘッダー・行ポインターを保存します。選択更新は増加するrevisionで古い応答を排除し、新しい検証済みデータへポインターを切り替えてから旧WEB_VIEWセルを消します。削除時に行を詰めず、空範囲だけを再利用するため、既存のMESSAGES/job/backupポインターを維持します。
