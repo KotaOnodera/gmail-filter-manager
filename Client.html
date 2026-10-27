@@ -7,9 +7,30 @@
   const commands={IMPORT:'インポート',PREVIEW:'差分確認',APPLY:'フィルター適用',VERIFY:'適用後の検証',RECOVER:'復旧',LABEL_APPLY:'ラベル反映',LABEL_RECOVER:'ラベル復旧',WEB_SAVE:'旧画面での保存',MESSAGES:'既存メールの整理'};
   let working=false,userStarted=false,mode='ALL',preview=null,labels=[],selected=new Set(),pendingApplyRunId='',pendingMessageRunId='',savedMessageJob=null,savedFilterJob=null,savedPreparation=null,filterPoll=null,preparationPoll=null,activeFilterView='';
   let viewEpoch=0,currentView=null,selectionRevision=0,confirmationSource=null;
+  let configurationNavigation=null,listNeedsRefresh=false,configurationGuards=[];
   function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined&&text!==null)el.textContent=String(text);if(cls)el.className=cls;return el;}
   function add(parent,...children){children.filter(Boolean).forEach(child=>parent.append(child));return parent;}
   function button(text,fn,style='secondary'){const b=node('button',text,'button '+style);b.type='button';b.addEventListener('click',action(fn));return b;}
+  function setConfigurationNavigation(nav){
+    if(!nav||!/^https:\/\/docs\.google\.com\/spreadsheets\/d\/[-_a-zA-Z0-9]+\/edit$/.test(nav.spreadsheet||''))return;
+    const sheets={};for(const name of ['Filters','Labels'])if(typeof nav.sheets?.[name]==='string'&&nav.sheets[name].startsWith(nav.spreadsheet+'#gid=')&&/^\d+$/.test(nav.sheets[name].slice((nav.spreadsheet+'#gid=').length)))sheets[name]=nav.sheets[name];
+    configurationNavigation={spreadsheet:nav.spreadsheet,sheets};
+  }
+  function configurationLink(name=null,url=null){
+    const nav=configurationNavigation;if(!nav)return null;const base=nav.sheets[name]||nav.spreadsheet;
+    const rowPrefix=base+'&range=A';
+    const safe=url===base||nav.sheets[name]&&typeof url==='string'&&url.startsWith(rowPrefix)&&/^[1-9]\d*$/.test(url.slice(rowPrefix.length));
+    const link=node('a',name?name+'で設定を確認・修正（新しいタブ）':'設定スプレッドシートを開く（新しいタブ）','configuration-link');link.href=safe?url:base;link.target='_blank';link.rel='noopener noreferrer';
+    link.addEventListener('click',()=>{
+      listNeedsRefresh=true;configurationGuards.forEach(fn=>fn());
+      if(activeConfirmation){activeConfirmation.needsReconfirm=true;freezeConfirmation(activeConfirmation);updateConfirmation(activeConfirmation,activeConfirmation.status);}
+      message('設定を確認・編集した後は、差分または対象一覧を再取得し、内容を再確認してから適用してください。選択と現在の画面は保持しています。','info');
+    });return link;
+  }
+  function configurationHelp(){
+    if(!configurationNavigation)return null;
+    const help=node('aside',null,'configuration-help');add(help,configurationLink(),node('p','編集後は一覧を再取得して再確認してください。行リンクは取得時点の位置です。並べ替え後は対象キーも確認してください。','muted'));return help;
+  }
   function clearMessage(){for(const id of ['notice','error']){$(id).hidden=true;$(id).replaceChildren();}}
   function message(text,type='success'){const el=type==='error'?$('error'):$('notice');el.replaceChildren(node('p',text));el.hidden=false;el.className='notice '+(type==='error'?'error':type==='warning'?'warning':type==='info'?'info':'');if(type==='error')el.focus();}
   let disabledControls=[],interruptedRequest=null,recoveryView=null,recoveryPoll=null,recoveryRead=0;
@@ -37,6 +58,7 @@
   function freezeConfirmation(c){c.valid=false;if(c.check){c.check.checked=false;c.check.disabled=true;}c.apply.disabled=true;}
   function updateConfirmation(c,status){
     if(activeConfirmation!==c)return;
+    if(c.needsReconfirm)status={...status,valid:false,message:'設定画面を開きました。内容を再確認して、新しい確認にチェックしてください。'};
     status={...status,expiresAt:status?.expiresAt??c.status?.expiresAt??c.p.confirmation?.expiresAt};c.status=status;c.valid=!!status?.valid&&!document.hidden;
     const deadline=Number.isFinite(status?.expiresAt)?new Date(status.expiresAt).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false})+'（日本時間）':'確認できません';
     c.text.textContent='有効期限: '+deadline+' / '+(status?.message||(c.valid?'有効':'確認が必要です。内容を再確認してください。'));
@@ -80,7 +102,7 @@
   }
   function saveSelection(){
     if(!currentView)return;const epoch=viewEpoch;
-    rawRpc('viewUpdate',{...currentView,keys:[...selected],revision:++selectionRevision}).then(r=>{if(epoch===viewEpoch&&r.status!=='OK'&&r.status!=='STALE')message('選択内容を保存できませんでした。再読み込み前に保存済み画面を確認してください。','warning');}).catch(()=>{if(epoch===viewEpoch)message('選択内容を保存できませんでした。選択し直して再保存できます。','warning');});
+    rawRpc('viewUpdate',{...currentView,_viewMode:mode,keys:[...selected],revision:++selectionRevision}).then(r=>{if(epoch===viewEpoch&&r.status!=='OK'&&r.status!=='STALE')message('選択内容を保存できませんでした。再読み込み前に保存済み画面を確認してください。','warning');}).catch(()=>{if(epoch===viewEpoch)message('選択内容を保存できませんでした。選択し直して再保存できます。','warning');});
   }
   function retrySavedView(action,error,view=null){
     shell('保存した画面を再確認','保存期限・設定変更・通信状態を確認してください。');main.append(node('p',error||'保存した表示が見つからないか、確認が失効しています。','notice warning'));
@@ -93,7 +115,7 @@
       retrySavedView(saved.action,saved.error);
       if(saved.status==='INVALID'&&saved.viewId){const c={p:{_view:saved},kind:'webApproval'};main.append(button('内容を再確認',()=>reconfirmContent(c)));}return;}
     if(['prepare','prepareStart','prepareRemaining'].includes(saved.action))confirmationSource=saved.sourceView||null;
-    mode=saved.mode||'ALL';selected=new Set(saved.keys||[]);selectionRevision=saved.revision||0;rememberView(saved.result?._view||saved);const r=saved.result;
+    setConfigurationNavigation(saved.result?.navigation);listNeedsRefresh=false;mode=saved.mode||'ALL';selected=new Set(saved.keys||[]);selectionRevision=saved.revision||0;rememberView(saved.result?._view||saved);const r=saved.result;
     if(saved.action==='preview'){preview=r;labels=r.labels||[];renderPreview();}
     else if(['prepareStart','prepareRemaining'].includes(saved.action))renderPreparation(r);
     else if(saved.action==='prepare')renderConfirmation(r);
@@ -152,9 +174,9 @@
     finally{if(view.refresh.isConnected&&sequence===recoveryRead)view.refresh.disabled=false;}
   }
   function navigation(page){document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
-  function shell(title,lead,page='home'){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';main.replaceChildren(node('h1',title),node('p',lead,'lead'));navigation(page);main.focus();window.scrollTo(0,0);}
+  function shell(title,lead,page='home'){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';configurationGuards=[];main.replaceChildren(node('h1',title),node('p',lead,'lead'));add(main,configurationHelp());navigation(page);main.focus();window.scrollTo(0,0);}
   function showHome(focus=true){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
-    main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));navigation('home');
+    configurationGuards=[];main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));add(main,configurationHelp());navigation('home');
     const handlers={import:importCheck,all:()=>loadPreview('ALL'),selected:()=>loadPreview('SELECTED'),history:()=>history(),messages:messagesList};
     for(const b of main.querySelectorAll('[data-command]'))b.addEventListener('click',action(handlers[b.dataset.command]));
     if(interruptedRequest)main.append(button('中断した操作の状況を確認',()=>session.resume(interruptedRequest)));
@@ -181,36 +203,66 @@
   function cards(entries,selectable=false,onSelection=()=>{}){
     const wrap=node('div');for(const e of candidates(entries)){
       const card=node('article',null,'change-card');add(card,node('span',e.matchedId&&e.operation==='NOOP'?'IDの紐付け':e.kind==='LABEL'?e.operation==='REPLACE'?'ラベル名変更':e.operation==='CREATE'?'ラベル作成':'ラベル・'+operations[e.operation]:operations[e.operation],'tag '+(e.operation==='DELETE'?'delete':'')),node('h2',titleOf(e)));
-      if(selectable&&e.ruleKey){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.checked=selected.has(e.ruleKey);check.dataset.ruleKey=e.ruleKey;add(label,check,node('span',e.kind==='LABEL'?'このラベル変更を選択':'この変更を選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.ruleKey);else selected.delete(e.ruleKey);for(const other of wrap.querySelectorAll('input[data-rule-key]'))other.checked=selected.has(other.dataset.ruleKey);onSelection();});card.append(label);}
-      if(e.errors?.length)card.append(node('p',e.errors.join(' / '),'notice error'));if(e.warnings?.length)card.append(node('p',e.warnings.join(' / '),'muted'));if(e.risks?.length)card.append(node('p',e.risks.map(r=>r==='TRASH'?'ゴミ箱への移動を含みます':'転送を含みます').join(' / '),'notice warning'));
+      if(selectable&&e.ruleKey){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.checked=selected.has(e.ruleKey);check.disabled=e.operation==='ERROR'||!!e.errors?.length;check.dataset.ruleKey=e.ruleKey;add(label,check,node('span',e.kind==='LABEL'?'このラベル変更を選択':'この変更を選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.ruleKey);else selected.delete(e.ruleKey);for(const other of wrap.querySelectorAll('input[data-rule-key]'))other.checked=selected.has(other.dataset.ruleKey);onSelection();});card.append(label);}
+      if(e.errors?.length)add(card,configurationLink(e.kind==='LABEL'?'Labels':'Filters',e.configurationUrl),node('p',(e.kind==='LABEL'?'Labels / LabelKey: ':'Filters / RuleKey: ')+(e.labelKey||e.ruleKey||'キーなし'),'muted'),node('p',e.errors.join(' / '),'notice error'));if(e.warnings?.length)card.append(node('p',e.warnings.join(' / '),'muted'));if(e.risks?.length)card.append(node('p',e.risks.map(r=>r==='TRASH'?'ゴミ箱への移動を含みます':'転送を含みます').join(' / '),'notice warning'));
       const compare=node('div',null,'comparison'),before=node('div'),after=node('div',null,'after');add(before,node('h3','変更前'),filterDefinition(e.before));add(after,node('h3','変更後'),filterDefinition(e.after));add(compare,before,after);card.append(compare);
       const detail=node('details',null,'details');add(detail,node('summary','元データを確認'),node('pre',JSON.stringify({before:e.before,after:e.after},null,2),'json'));card.append(detail);wrap.append(card);
     }return wrap;
   }
+  // Filtering uses the text already rendered in each card. Keep nodes and the
+  // selection Set intact so typing never changes focus, details or saved scope.
+  function listPanel(entries,list,{selectable=false,keyOf=e=>e.ruleKey,eligible=e=>e.operation!=='ERROR'&&!e.errors?.length,onSelection=()=>{}}={}){
+    const panel=node('div',null,'list-panel'),tools=node('div',null,'search-panel'),field=node('label',null,'list-search'),search=node('input'),errorLabel=node('label',null,'selection-label'),errors=node('input'),count=node('p','','selection-count'),empty=node('p','検索結果は0件です。「絞り込みを解除」で一覧に戻れます。','empty');
+    search.type='search';search.value='';search.placeholder='送信元・件名・ラベル名など';search.setAttribute('aria-label','一覧を検索');
+    errors.type='checkbox';errors.dataset.listErrors='true';
+    const errorCount=entries.filter(e=>e.operation==='ERROR'||e.errors?.length).length;
+    add(field,node('span','一覧を検索'),search);add(errorLabel,errors,node('span','入力エラーのみ表示（'+errorCount+'件）'));
+    count.setAttribute('role','status');count.setAttribute('aria-live','polite');count.setAttribute('aria-atomic','true');
+    const normalize=text=>String(text).normalize('NFKC').toLocaleLowerCase('ja-JP');
+    const records=entries.map((entry,i)=>({entry,card:list.childNodes[i],text:normalize(list.childNodes[i].textContent)}));let visible=records;
+    function update(){
+      const text=normalize(search.value.trim());visible=records.filter(r=>(!errors.checked||r.entry.operation==='ERROR'||r.entry.errors?.length)&&(!text||r.text.includes(text)));
+      const shown=new Set(visible),visibleKeys=new Set(visible.map(r=>keyOf(r.entry))),hidden=[...selected].filter(k=>!visibleKeys.has(k)).length;
+      records.forEach(r=>r.card.hidden=!shown.has(r));empty.hidden=visible.length!==0;
+      count.textContent='表示 '+visible.length+'件 / 全 '+entries.length+'件 / 入力エラー '+errorCount+'件'+(selectable?' / 選択 '+selected.size+'件（全体） / 非表示の選択 '+hidden+'件':'');
+      if(selectable)for(const check of list.querySelectorAll('input[data-rule-key]'))check.checked=selected.has(check.dataset.ruleKey);
+    }
+    function localButton(text,fn){const b=node('button',text,'button secondary');b.type='button';b.addEventListener('click',event=>{event?.preventDefault();if(!working)fn();});return b;}
+    const reset=()=>{search.value='';errors.checked=false;update();search.focus();};
+    search.addEventListener('input',update);search.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();reset();}});errors.addEventListener('change',update);
+    add(tools,field,errorLabel,localButton('絞り込みを解除',reset),node('p','取得済みの表示だけを絞り込みます。検索や絞り込みで選択は変わりません。','muted'),count);
+    if(selectable){
+      const bulk=fn=>{for(const {entry}of visible)if(keyOf(entry)&&eligible(entry))fn(keyOf(entry));update();onSelection();saveSelection();};
+      const actions=node('div',null,'actions');add(actions,localButton('表示中の選択可能な対象をすべて選択',()=>bulk(k=>selected.add(k))),localButton('表示中の選択可能な対象を解除',()=>bulk(k=>selected.delete(k))));
+      add(tools,node('p','選択・解除は表示中の選択可能な対象だけに作用します。非表示の選択も次の確認へ含まれます。','muted'),actions);
+    }
+    add(panel,tools,empty,list);update();return {element:panel,update};
+  }
   async function importCheck(){renderImportCheck(await rpc('importCheck'));}
-  function renderImportCheck(check){rememberView(check._view);shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターとラベルをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。ラベル全'+(check.labelTotal||0)+'件 / 未登録'+(check.labelCount||0)+'件。既存の編集内容は維持します。','notice info'));
+  function renderImportCheck(check){setConfigurationNavigation(check.navigation);rememberView(check._view);shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターとラベルをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。ラベル全'+(check.labelTotal||0)+'件 / 未登録'+(check.labelCount||0)+'件。既存の編集内容は維持します。','notice info'));
     const label=node('label',null,'check-confirm'),approval=node('input');approval.type='checkbox';add(label,approval,node('span','上記の取り込み内容を確認しました'));main.append(label);
     const actions=node('div',null,'actions'),apply=button('フィルター'+check.count+'件・ラベル'+(check.labelCount||0)+'件をインポート',async()=>{if(!activeConfirmation?.valid)throw Error('内容を再確認してください');if(!approval.checked)throw Error('取り込み内容を確認してください');const r=await approvedRequest('import',{token:check.token});if(!r)return;preview=null;shell('インポート完了','フィルター'+r.count+'件・ラベル'+(r.labelCount||0)+'件を追加しました。');add(main,button('この実行のログ',()=>history(0,r.runId)),button('操作に戻る',()=>showHome()));},'');add(actions,apply,button('キャンセル',()=>showHome()));main.append(actions);confirmationControls(check,'webImport',apply,approval);
   }
-  async function loadPreview(nextMode){mode=nextMode;selected=new Set();preview=await rpc('preview',{_viewMode:mode});rememberView(preview._view);selectionRevision=0;labels=preview.labels||[];renderPreview();}
+  async function loadPreview(nextMode){mode=nextMode;selected=new Set();preview=await rpc('preview',{_viewMode:mode});listNeedsRefresh=false;setConfigurationNavigation(preview.navigation);rememberView(preview._view);selectionRevision=0;labels=preview.labels||[];renderPreview();}
   function renderPreview(){rememberView(preview._view);
     const partial=mode==='SELECTED',items=candidates(preview.entries);shell(partial?'適用する変更を選択':'全部適用の内容を確認',partial?'反映するフィルター・ラベルを選んでください。選択したフィルターに必要なラベル変更も確認画面に追加します。':'フィルターとラベルを、スプレッドシートの状態に揃えます。Gmail側で変更されたラベル名も上書きします。');
     main.append(stats(preview.summary),node('p','変更なし '+preview.summary.NOOP+'件 / Gmail側のみ '+preview.summary.REMOTE_ONLY+'件（削除しません）','muted'));
     if(!items.length){main.append(node('p','適用が必要な変更はありません。','notice info'),button('操作に戻る',()=>showHome()));return;}
-    if(preview.summary.ERROR)main.append(node('p','入力エラーが'+preview.summary.ERROR+'件あります。設定の修正はスプレッドシートで行ってください。選択適用では対象の内容を再検証します。','notice warning'));
-    const tools=node('div',null,'selection-tools'),count=node('p',null,'selection-count');count.setAttribute('role','status');
+    if(preview.summary.ERROR){main.append(node('p','入力エラーが'+preview.summary.ERROR+'件あるため全部適用できません。設定スプレッドシートで修正後、差分を再取得・再確認してください。正しい対象だけ選択して確認へ進むこともできます。','notice warning'));if(!partial)main.append(button('正しい対象を選択して適用',()=>{mode='SELECTED';saveSelection();renderPreview();}));}
     const next=button(partial?'選択した内容の確認へ':'全部適用の確認へ',prepare,'');
-    const update=()=>{count.textContent='選択 '+selected.size+'件';next.disabled=selected.size===0;};
-    const changed=()=>{update();saveSelection();};
-    if(partial){const a=node('div',null,'actions');add(a,button('すべて選択',async()=>{selected=new Set(items.filter(e=>e.operation!=='ERROR').map(e=>e.ruleKey).filter(Boolean));saveSelection();renderPreview();}),button('選択を解除',async()=>{selected.clear();saveSelection();renderPreview();}));add(tools,count,a);main.append(tools);update();}else next.disabled=!!preview.summary.ERROR;
-    const actions=node('div',null,'actions');add(actions,next,button('差分を再取得',()=>loadPreview(mode)),button('操作に戻る',()=>showHome(),'tertiary'));main.append(actions,cards(preview.entries,partial,changed));
+    const update=()=>{next.disabled=listNeedsRefresh||(partial?selected.size===0:!!preview.summary.ERROR);};
+    let panel;const changed=()=>{panel.update();update();saveSelection();};
+    panel=listPanel(items,cards(items,partial,changed),{selectable:partial,onSelection:update});configurationGuards.push(update);update();
+    const actions=node('div',null,'actions');add(actions,next,button('差分を再取得',()=>loadPreview(mode)),button('操作に戻る',()=>showHome(),'tertiary'));main.append(panel.element,actions);
   }
+
   async function prepare(){
+    if(listNeedsRefresh)throw Error('設定編集後は差分を再取得・再確認してください');
     confirmationSource=preview._view||null;
     const p=await rpc('prepareStart',{runId:preview.previousRunId?'':preview.runId,...(preview.previousRunId?{previousRunId:preview.previousRunId}:{}),_viewMode:mode,_sourceViewId:preview._view?.viewId,...(mode==='SELECTED'?{keys:[...selected]}:{})});renderPreparation(p);
   }
   function renderPreparation(result){
-    savedPreparation=result;rememberView(result._view);
+    setConfigurationNavigation(result.navigation);savedPreparation=result;rememberView(result._view);
     if(result.status==='READY'){renderConfirmation(result);return;}
     shell('適用内容の確認を準備','差分の検証とバックアップを段階ごとに保存しています。画面を閉じても準備は続きます。');
     const text=node('p',result.status==='PAUSED'?result.error||'確認準備を中断しました。差分を再取得してください。':'確認準備中 / '+(result.phase||'受付済み'),'notice '+(result.status==='PAUSED'?'warning':'info'));
@@ -218,7 +270,7 @@
     if(result.status==='PREPARING'){const epoch=viewEpoch;preparationPoll=setTimeout(()=>{if(!document.hidden&&epoch===viewEpoch)readWithDeadline('prepareStatus',{preparationId:result.preparationId}).then(r=>{if(epoch===viewEpoch)renderPreparation(r);}).catch(()=>{text.textContent='状況を取得できませんでした。保存済みの確認状況を更新できます。';});},5000);}
   }
   async function loadPreparation(preparationId){const epoch=viewEpoch;try{const r=await readWithDeadline('prepareStatus',{preparationId});if(epoch===viewEpoch)renderPreparation(r);}catch(e){if(epoch===viewEpoch)retrySavedView('prepareStart',e.message);}}
-  function renderConfirmation(p){rememberView(p._view);labels=p.labels||labels;
+  function renderConfirmation(p){setConfigurationNavigation(p.navigation);rememberView(p._view);labels=p.labels||labels;
 
     shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。最終承認までの有効期限を確認してください。','notice info'));
     if(p.entries.some(e=>e.kind!=='LABEL'&&e.operation==='REPLACE'))main.append(node('p','更新時は、一時的に新旧のフィルターが同時に有効になります。転送などが重複する場合があります。','notice warning'));if(p.summary.TRASH||p.summary.FORWARD)main.append(node('p','ゴミ箱への移動 '+p.summary.TRASH+'件 / 転送 '+p.summary.FORWARD+'件を含みます。','notice warning'));
@@ -254,29 +306,32 @@
   function messageCards(entries,selectable=false,onSelection=()=>{}){
     const wrap=node('div');for(const e of entries){
       const card=node('article',null,'change-card');card.append(node('h2',e.title));
-      if(selectable){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.disabled=!e.eligible||!!e.errors.length;check.checked=selected.has(e.key);add(label,check,node('span','このフィルターを選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.key);else selected.delete(e.key);onSelection();});card.append(label);}
+      if(selectable){const label=node('label',null,'selection-label'),check=node('input');check.type='checkbox';check.disabled=!e.eligible||!!e.errors.length;check.checked=selected.has(e.key);check.dataset.ruleKey=e.key;add(label,check,node('span','このフィルターを選択'));check.addEventListener('change',()=>{if(check.checked)selected.add(e.key);else selected.delete(e.key);onSelection();});card.append(label);}
       if(e.count!==undefined)card.append(node('p','一致したメール '+e.count+'件','tag'));
       card.append(node('p',messageActionText(e.action||{}),'notice info'));
       if(e.ignored?.length)card.append(node('p','既存メールには実行しません: '+e.ignored.join(' / '),'notice warning'));
-      if(e.errors?.length)card.append(node('p',e.errors.join(' / '),'notice error'));
+      if(e.errors?.length)add(card,configurationLink('Filters',e.configurationUrl),node('p','Filters / RuleKey: '+(e.key||'キーなし'),'muted'),node('p',e.errors.join(' / '),'notice error'));
       if(e.filter){const detail=node('details',null,'details');add(detail,node('summary','検索条件と実行する処理'),filterDefinition({criteria:e.filter.criteria,action:e.action}));card.append(detail);}
       wrap.append(card);
     }return wrap;
   }
   async function messagesList(){
     if(savedMessageJob&&!['OK','CANCELLED'].includes(savedMessageJob.status)){await loadMessageStatus(savedMessageJob.runId);return;}
-    const view=await rpc('messagesList');selected=new Set();selectionRevision=0;renderMessagesList(view);
+    const view=await rpc('messagesList');listNeedsRefresh=false;selected=new Set();selectionRevision=0;renderMessagesList(view);
   }
-  function renderMessagesList(view){rememberView(view._view);labels=view.labels||[];
+  function renderMessagesList(view){rememberView(view._view);setConfigurationNavigation(view.navigation);labels=view.labels||[];
     shell('既存メールへ適用するフィルター','受信済みのメールを整理します。フィルター設定の反映とは別の操作です。');
     main.append(node('p','ラベル付与・アーカイブ・既読化のみを実行します。検索開始時より前のメールが対象です。迷惑メール・ゴミ箱・下書き・送信済みは除外します。','notice info'));
     if(!view.entries.length){add(main,node('p','有効なフィルターがありません。','empty'),button('操作に戻る',()=>showHome()));return;}
-    const count=node('p','選択 '+selected.size+'件','selection-count'),next=button('選択したフィルターのメールを検索',()=>startMessages([...selected]),'');next.disabled=true;
-    const update=()=>{count.textContent='選択 '+selected.size+'件';next.disabled=selected.size===0;saveSelection();};next.disabled=selected.size===0;
-    const all=button('適用できる全件のメールを検索',()=>startMessages(null),'');all.disabled=view.entries.some(e=>e.errors.length)||!view.entries.some(e=>e.eligible);
-    add(main,all,node('h2','選択して適用'),count,messageCards(view.entries,true,update),next,button('操作に戻る',()=>showHome(),'tertiary'));
+    const next=button('選択したフィルターのメールを検索',()=>startMessages([...selected]),'');
+    const update=()=>{next.disabled=listNeedsRefresh||selected.size===0;};let panel;
+    panel=listPanel(view.entries,messageCards(view.entries,true,()=>{panel.update();update();saveSelection();}),{selectable:true,keyOf:e=>e.key,eligible:e=>e.eligible&&!e.errors?.length,onSelection:update});update();
+    const all=button('適用できる全件のメールを検索',()=>startMessages(null),'');const updateAll=()=>{update();all.disabled=listNeedsRefresh||view.entries.some(e=>e.errors.length)||!view.entries.some(e=>e.eligible);};configurationGuards.push(updateAll);updateAll();
+    if(view.entries.some(e=>e.errors.length))main.append(node('p','入力エラーがあるため全件のメール検索はできません。設定を修正して取得し直すか、正しい対象を選択してください。','notice warning'));
+    add(main,all,node('h2','選択して適用'),panel.element,next,button('対象一覧を再取得',messagesList),button('操作に戻る',()=>showHome(),'tertiary'));
   }
-  async function startMessages(keys){const run=await rpc('messagesStart',{keys});await scanMessages(run);}
+
+  async function startMessages(keys){if(listNeedsRefresh)throw Error('設定編集後は対象一覧を再取得・再確認してください');const run=await rpc('messagesStart',{keys});await scanMessages(run);}
   async function scanMessages(run){
     renderMessageStatus(run,true);pendingMessageRunId=run.runId;renderMessageStatus(await rpc('messagesScan',{runId:run.runId}));
   }
@@ -315,7 +370,7 @@
   async function prepareMessages(runId){
     renderMessagesConfirmation(await rpc('messagesPrepare',{runId}));
   }
-  function renderMessagesConfirmation(p){const runId=p.runId;rememberView(p._view);labels=p.labels||labels;
+  function renderMessagesConfirmation(p){setConfigurationNavigation(p.navigation);const runId=p.runId;rememberView(p._view);labels=p.labels||labels;
     shell('既存メールへの適用を確認','保存済みの対象メールへ、以下の3種類の処理だけを実行します。最終承認までの有効期限を確認してください。');
     main.append(node('p','対象 延べ'+p.total+'件 / 処理済み '+p.completed+'件 / 未処理 '+p.remaining+'件','selection-count'));
     if(p.uncertain)main.append(node('p','結果不明 '+p.uncertain+'件は、保存済みの同じメールへ再適用します。','notice warning'));
@@ -343,6 +398,6 @@
   // Operations are visible before any service call. Bootstrap reads only saved outcome state.
   showHome(false);
   const restoredRequest=session.restore();
-  rpc('boot').then(async result=>{if(result.filterJob)savedFilterJob=result.filterJob;if(result.filterPreparation)savedPreparation=result.filterPreparation;if(!savedMessageJob&&result.messageJob)savedMessageJob=result.messageJob;if(restoredRequest||interruptedRequest)return;if(savedFilterJob&&['ACCEPTED','RUNNING','WAITING'].includes(savedFilterJob.status)&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedFilterJob&&session.viewLocator()?.action!=='prepareRemaining'&&session.viewLocator()?.runId===savedFilterJob.runId&&!userStarted){session.forgetView();currentView=null;renderFilterJob(savedFilterJob);return;}if(session.viewLocator()&&!userStarted){await loadSavedView(session.viewLocator());return;}if(savedPreparation&&['PREPARING','READY'].includes(savedPreparation.status)&&!preparationBelongsToJob(savedPreparation,savedFilterJob)&&preparationFollowsJob(savedPreparation,savedFilterJob)&&!userStarted){await loadPreparation(savedPreparation.preparationId);return;}if(savedFilterJob&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
+  rpc('boot').then(async result=>{setConfigurationNavigation(result.navigation);if(result.navigation&&!userStarted&&!restoredRequest&&!session.viewLocator())showHome(false);if(result.filterJob)savedFilterJob=result.filterJob;if(result.filterPreparation)savedPreparation=result.filterPreparation;if(!savedMessageJob&&result.messageJob)savedMessageJob=result.messageJob;if(restoredRequest||interruptedRequest)return;if(savedFilterJob&&['ACCEPTED','RUNNING','WAITING'].includes(savedFilterJob.status)&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedFilterJob&&session.viewLocator()?.action!=='prepareRemaining'&&session.viewLocator()?.runId===savedFilterJob.runId&&!userStarted){session.forgetView();currentView=null;renderFilterJob(savedFilterJob);return;}if(session.viewLocator()&&!userStarted){await loadSavedView(session.viewLocator());return;}if(savedPreparation&&['PREPARING','READY'].includes(savedPreparation.status)&&!preparationBelongsToJob(savedPreparation,savedFilterJob)&&preparationFollowsJob(savedPreparation,savedFilterJob)&&!userStarted){await loadPreparation(savedPreparation.preparationId);return;}if(savedFilterJob&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
 })();
 </script>

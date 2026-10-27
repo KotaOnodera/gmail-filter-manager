@@ -47,8 +47,21 @@ var GFMWeb = (function () {
       while(keep.length>=12){const id=keep.shift();retireView(d.state.get('webView:'+id));}
       d.state.set('webViewIndex',keep);return keep;
     }
+    function navigation(entries=[]){
+      if(typeof d.bookId!=='string'||!d.bookId||!/^[-_a-zA-Z0-9]+$/.test(d.bookId))return null;
+      const spreadsheet='https://docs.google.com/spreadsheets/d/'+d.bookId+'/edit',locations=d.store.configurationLocations?d.store.configurationLocations(entries):{},sheets={};
+      for(const name of ['Filters','Labels'])if(Number.isSafeInteger(locations[name]?.gid)&&locations[name].gid>=0)sheets[name]=spreadsheet+'#gid='+locations[name].gid;
+      return {spreadsheet,sheets,locations};
+    }
+    function withNavigation(result){
+      const nav=navigation(result.entries||[]);if(!nav)return result;
+      const entries=result.entries?.map(e=>{const name=e.kind==='LABEL'?'Labels':'Filters',key=e.kind==='LABEL'?e.labelKey:e.ruleKey||e.key,row=nav.locations[name]?.rows?.[key],base=nav.sheets[name]||nav.spreadsheet;
+        return {...e,...(nav.sheets[name]?{configurationUrl:base+(Number.isSafeInteger(row)&&row>=2?'&range=A'+row:'')}:{})};});
+      return {...result,navigation:{spreadsheet:nav.spreadsheet,sheets:nav.sheets},...(entries?{entries}:{})};
+    }
     function saveView(action,input,result){
       if(!viewActions.has(action)||result.job)return result;
+      result=withNavigation(result);
       const ids=pruneViews(),viewId=d.uuid(),h={viewId,action,runId:result.runId||input.runId||'',preparationId:result.preparationId||'',at:now(),actor:d.actor(),bookId:d.bookId};
       let sourceView=null;
       if(['prepare','prepareStart'].includes(action)&&input.runId){
@@ -155,7 +168,7 @@ var GFMWeb = (function () {
       if(!Number.isSafeInteger(input.revision)||input.revision<=v.revision)return {status:'STALE'};
       const valid=new Set((v.result.entries||[]).filter(e=>(e.ruleKey||e.key)&&e.operation!=='ERROR'&&e.eligible!==false&&!e.errors?.length).map(e=>e.ruleKey||e.key));
       if(!Array.isArray(input.keys)||input.keys.length>10000||new Set(input.keys).size!==input.keys.length||input.keys.some(k=>!valid.has(k)))throw Error('選択対象が一致しません');
-      const pointer=d.store.writeWebView(h.viewId,{...v,keys:input.keys,revision:input.revision});d.state.set('webView:'+h.viewId,{...h,pointer});d.store.removeWebView(h.pointer);return {status:'OK'};
+      const pointer=d.store.writeWebView(h.viewId,{...v,mode:input._viewMode==='SELECTED'?'SELECTED':v.mode,keys:input.keys,revision:input.revision});d.state.set('webView:'+h.viewId,{...h,pointer});d.store.removeWebView(h.pointer);return {status:'OK'};
     }
     const trackedActions=new Set(['reconfirm','importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
     function saveActivity(activity){
@@ -197,7 +210,7 @@ var GFMWeb = (function () {
       if(action==='confirmationStatus')return d.withLock(()=>confirmationStatus(input.kind,input.token));
       if(action==='reconfirm')return d.withLock(()=>tracked(action,input,()=>reconfirm(input)));
       if(action==='viewUpdate')return d.withLock(()=>updateView(input));
-      if(action==='boot'){const last=d.state.get('webOutcome');return {filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+      if(action==='boot'){const last=d.state.get('webOutcome');return {navigation:(()=>{const n=navigation();return n?{spreadsheet:n.spreadsheet,sheets:n.sheets}:null;})(),filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
       if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
       if(action==='prepareStatus'&&d.jobs)return readyPreparation(input.preparationId);
       return d.withLock(()=>tracked(action,input,()=>{

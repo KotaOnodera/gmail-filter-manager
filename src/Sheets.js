@@ -292,6 +292,32 @@ var GFMSheets = (function () {
       if(C.stable(readWebView(pointer))!==C.stable(value))throw dataIntegrity('表示データの読み返しが一致しません');return pointer;
     }
     function removeWebView(p){webViewRows(p);const s=sheet('Backup');for(let n=0;n<p.parts;n+=10)s.getRange(p.row+n,1,Math.min(10,p.parts-n),schemas.Backup.length).clearContent();d.app.flush();}
+    // Navigation is advisory. Resolve only fixed configuration sheets, and only
+    // expose a row when its unique metadata anchor still contains the same key.
+    // With no entries (boot), this reads sheet IDs only, never cell contents.
+    function configurationLocations(entries=[]){
+      const result={};
+      for(const name of ['Filters','Labels']){
+        const s=d.book.getSheetByName(name);if(!s||!s.getSheetId)continue;
+        const gid=s.getSheetId();if(!Number.isSafeInteger(gid)||gid<0)continue;
+        const location={gid,rows:{}};result[name]=location;
+        const relevant=entries.filter(e=>(e.kind==='LABEL'?'Labels':'Filters')===name),keys=relevant.map(e=>e.kind==='LABEL'?e.labelKey:e.ruleKey||e.key).filter(Boolean);
+        if(!keys.length)continue;
+        const anchors=s.createDeveloperMetadataFinder().withKey(name==='Labels'?'GFM_LABEL':'GFM').find(),byToken=new Map(),requested=new Map();
+        for(const m of anchors){const value=m.getValue();if(!byToken.has(value))byToken.set(value,[]);byToken.get(value).push(m);}
+        for(const key of keys)requested.set(key,(requested.get(key)||0)+1);
+        const n=s.getLastRow()-1;if(n<1)continue;
+        const range=s.getRange(2,1,n,1),values=range.getValues(),formulas=range.getFormulas(),actualCounts=new Map();
+        for(const [value]of values)actualCounts.set(value,(actualCounts.get(value)||0)+1);
+        for(const [key,count]of requested){
+          if(count!==1||actualCounts.get(key)!==1||!token(key))continue;
+          const matches=byToken.get(token(key))||[];if(matches.length!==1)continue;
+          const row=matches[0].getLocation().getRow()?.getRow();if(!Number.isSafeInteger(row)||row<2||row>n+1)continue;
+          if(formulas[row-2][0]||values[row-2][0]!==key)continue;
+          location.rows[key]=row;
+        }
+      }return result;
+    }
     function clipped(value){const s=stringify(value);return s.length<=limit?s:s.slice(0,limit-100)+' … [表示を省略。原本はBackupを参照]';}
     function writeDiff(runId,entries) {
       const s=sheet('Diff');if(s.getLastRow()>1)s.getRange(2,1,s.getLastRow()-1,schemas.Diff.length).clearContent();
@@ -301,7 +327,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {writeWebView,readWebView,removeWebView,batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {configurationLocations,writeWebView,readWebView,removeWebView,batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};
