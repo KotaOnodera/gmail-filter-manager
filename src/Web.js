@@ -5,7 +5,7 @@ var GFMWeb = (function () {
     function page(input){return {offset:Math.max(0,Math.min(100000,Number.isSafeInteger(input.offset)?input.offset:0)),limit:20};}
     function confirmation(kind,ticket){const token=d.uuid();d.state.set(kind,{token,ticket,at:now(),actor:d.actor(),bookId:d.bookId});return token;}
     function checked(kind,token){const c=d.state.get(kind);if(!c||!token||c.token!==token||c.actor!==d.actor()||c.bookId!==d.bookId)throw new Error('確認が無効です。もう一度確認してください');if(now()-c.at>15*60*1000)throw new Error('確認の期限が切れました。もう一度確認してください');return c;}
-    const trackedActions=new Set(['importCheck','import','preview','prepare','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
+    const trackedActions=new Set(['importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
     function saveActivity(activity){
       const index=d.state.get('webActivityIndex')||[];if(!Array.isArray(index))throw Error('実行状況の索引が破損しています');
       const key='webActivity:'+activity.requestId;d.state.set(key,activity);
@@ -18,7 +18,7 @@ var GFMWeb = (function () {
       const activity={requestId,action,runId:input.runId||approval?.ticket?.runId||'',status:'RUNNING',at:now(),actor:d.actor(),bookId:d.bookId};
       saveActivity(activity);
       try{
-        const result=fn(),record={...activity,status:'DONE',runId:result?.runId||activity.runId,finishedAt:now()};
+        const result=fn(),record={...activity,status:'DONE',runId:result?.runId||activity.runId,finishedAt:now(),preparationId:result?.preparationId||''};
         if(action==='apply'||action==='import')record.result={...result,error:result.error?String(result.error).slice(0,1500):undefined};
         saveActivity(record);return result;
       }catch(err){saveActivity({...activity,status:'ERROR',error:String(err.message||err).slice(0,1500),finishedAt:now()});throw err;}
@@ -27,8 +27,9 @@ var GFMWeb = (function () {
       if(typeof requestId!=='string'||!requestId||requestId.length>128)throw Error('実行状況の確認IDが不正です');
       const a=d.state.get('webActivity:'+requestId)||d.state.get('webActivity');
       if(!a||a.requestId!==requestId||a.actor!==d.actor()||a.bookId!==d.bookId)return {status:'NOT_FOUND',requestId};
-      const result={requestId,action:a.action,runId:a.runId,status:a.status,error:a.error||'',result:a.result||null};
+      const result={requestId,preparationId:a.preparationId||'',action:a.action,runId:a.runId,status:a.status,error:a.error||'',result:a.result||null};
       const outcome=d.state.get('webOutcome');
+      if(a.action==='apply'&&d.jobs&&a.runId&&d.state.get('filterJob')?.runId===a.runId){result.status='DONE';result.result=d.jobs.status(a.runId);return result;}
       if(a.action==='apply'&&outcome?.actor===d.actor()&&outcome.bookId===d.bookId&&outcome.result.runId===a.runId&&outcome.result.status!=='UNKNOWN'){result.status='DONE';result.result=outcome.result;}
       if(a.action.startsWith('messages')){
         const j=d.state.get('messageJob');if(j&&(j.runId===a.runId||a.action==='messagesStart'&&j.requestId===requestId)){result.runId=j.runId;result.messageJob={runId:j.runId,status:j.status,total:j.total,completed:j.completed,remaining:j.total-j.completed,uncertain:j.pending?.count||0,error:j.error||''};}
@@ -40,8 +41,13 @@ var GFMWeb = (function () {
       input=input||{};if(typeof input!=='object'||Array.isArray(input))throw new Error('入力形式が不正です');
       // Read only small owner-scoped checkpoints; status must remain available while a write owns the lock.
       if(action==='resume')return resume(input.requestId);
+      if(action==='boot'){const last=d.state.get('webOutcome');return {filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+      if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
+      if(action==='prepareStatus'&&d.jobs){const p=d.jobs.prepareStatus(input.preparationId);if(p.status!=='READY')return p;const old=d.state.get('webApproval');return {...p,...p.ticket,token:old&&old.ticket.runId===p.ticket.runId?old.token:confirmation('webApproval',p.ticket)};}
       return d.withLock(()=>tracked(action,input,()=>{
-        if(action==='boot'){const last=d.state.get('webOutcome');return {messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+        if(action==='prepareRemaining'&&d.jobs){d.state.remove('webApproval');return d.jobs.prepareRemaining(input.runId);}
+        if(action==='prepareStart'&&d.jobs){d.state.remove('webApproval');return d.jobs.prepareStart(input);}
+
         if(action==='messagesList')return d.messages.list();
         if(action==='messagesStart')return d.messages.start(input.keys===undefined?null:input.keys,input._requestId);
         if(action==='messagesScan')return d.messages.scan(input.runId);
@@ -65,16 +71,16 @@ var GFMWeb = (function () {
           const view=d.controller.prepareView(input.keys),ticket=view.ticket;return {...ticket,entries:view.entries,labels:view.labels,token:confirmation('webApproval',ticket)};
         }
         if(action==='apply'){
-          const last=d.state.get('webOutcome');if(last&&input.token===last.token&&last.actor===d.actor()&&last.bookId===d.bookId)return last.result;
+          const last=d.state.get('webOutcome');if(last&&input.token===last.token&&last.actor===d.actor()&&last.bookId===d.bookId)return d.jobs&&last.result.job?d.jobs.status(last.result.runId):last.result;
           const c=checked('webApproval',input.token);d.state.remove('webApproval');
           // Consume before the first mutation. A lost response never grants a second apply.
           d.state.set('webOutcome',{token:input.token,actor:d.actor(),bookId:d.bookId,result:{status:'UNKNOWN',runId:c.ticket.runId,completed:0,error:'結果を履歴で確認してください。自動再実行はしません。'}});
-          const result={...d.controller.apply(c.ticket,true),runId:c.ticket.runId};
+          const result={...(d.jobs?d.jobs.accept(c.ticket,true):d.controller.apply(c.ticket,true)),runId:c.ticket.runId};
           d.state.set('webOutcome',{token:input.token,actor:d.actor(),bookId:d.bookId,result});return result;
         }
         if(action==='outcome'||action==='acknowledgeOutcome'){
           const last=d.state.get('webOutcome');if(!last||last.actor!==d.actor()||last.bookId!==d.bookId||last.result.runId!==input.runId)throw new Error('この実行結果は見つかりません。履歴を確認してください');
-          if(action==='acknowledgeOutcome')d.state.set('webOutcome',{...last,acknowledged:true});return last.result;
+          if(action==='acknowledgeOutcome')d.state.set('webOutcome',{...last,acknowledged:true});return d.jobs&&last.result.job?d.jobs.status(last.result.runId):last.result;
         }
         if(action==='verify')return d.controller.verify();
         if(action==='history'){const p=page(input);return d.store.readHistory(p.offset,p.limit,typeof input.runId==='string'?input.runId.slice(0,200):'');}

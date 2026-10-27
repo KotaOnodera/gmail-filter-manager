@@ -146,6 +146,14 @@ var GFMSync = (function () {
       log(runId,'PREVIEW',{result:current.entries.some(e=>e.operation==='ERROR')?'ERROR':'OK',verification:JSON.stringify(summary(current.entries))});
       return {runId,entries:current.entries,summary:summary(current.entries),labels:resolve(current.rows,current.labelRows,current.state).planState.labels};
     }
+    function capturePreparation(runId,selectedKeys) {
+      ready();
+      if(d.state.get('pending')||d.state.get('labelPending'))throw Error('中断操作を先に復旧してください');
+      const current=runId?checkedPreview():snapshot();
+      if(runId&&current.runId!==runId)throw Error('別の差分が表示されています。再確認してください');
+      const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=targets(current,keys);
+      return {runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
+    }
     function prepareView(selectedKeys) {
       d.state.remove('prepared');
       if(d.state.get('pending')||d.state.get('labelPending'))throw new Error('中断操作があります。再プレビューしてください');
@@ -155,6 +163,8 @@ var GFMSync = (function () {
       const snapshotId=backup(current.state);
       const ticket={runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(entries),preparedAt:d.now()};
       if(keys!==null){const canonical=keys.slice().sort();d.store.writeScope(snapshotId,canonical,date());const actual=d.store.readScope(snapshotId);if(C.stable(actual)!==C.stable(canonical))throw new Error('選択対象の保存に失敗しました');ticket.selection={hash:digest(canonical),count:canonical.length};}
+      ticket.jobCounts={filters:entries.filter(e=>e.kind!=='LABEL'&&(!['NOOP','REMOTE_ONLY'].includes(e.operation)||e.matchedId)).length,labels:entries.filter(e=>e.kind==='LABEL'&&(e.operation!=='NOOP'||e.matchedId)).length};
+      if(d.store.writeJobData)ticket.jobApproval=d.store.writeJobData(ticket.runId,{rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,bindings:resolve(current.rows,current.labelRows,current.state).refs});
       d.state.set('prepared',ticket);return {ticket:C.clone(ticket),entries:C.clone(entries),labels:C.clone(resolve(current.rows,current.labelRows,current.state).planState.labels)};
     }
     function prepare(selectedKeys){return prepareView(selectedKeys).ticket;}
@@ -273,7 +283,7 @@ var GFMSync = (function () {
       const result={ok:unresolved.length===0&&!d.state.get('pending')&&!d.state.get('labelPending'),unresolved,remoteOnly:current.entries.filter(e=>e.operation==='REMOTE_ONLY').length,remaining};
       log(runId||d.uuid(),'VERIFY',{result:result.ok?'OK':'UNRESOLVED',verification:JSON.stringify({unresolved:unresolved.length,remoteOnly:result.remoteOnly,remaining})});return result;
     }
-    return {importAll,preview,prepare,prepareView,apply,verify};
+    return {capturePreparation,importAll,preview,prepare,prepareView,apply,verify};
   }
   return {create};
 })();
