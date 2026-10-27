@@ -132,3 +132,9 @@ GFM_installはバージョン変更を検出して明示更新を要求します
 ## 7. エラー時
 
 作成結果不明の場合は状態をリセットして再実行せず、[復旧手順](recovery.md)でファイルとGASを照合します。HTTP 403ではCloud側のAPI有効化、ダッシュボード側の利用許可、OAuth同意を確認してください。
+
+## バックグラウンド適用の追加権限（Issue #5）
+
+運用GASに `https://www.googleapis.com/auth/script.scriptapp` を追加しました。所有者による `GFM_runFilterJob` 用の時間主導トリガーの作成・確認・削除に使います。更新後は所有者のアカウントで追加権限を認可してください。WebのMYSELF / USER_ACCESSINGを維持し、インストーラーの権限は増やしていません。新しい配布物はJobs / Loggingを含む16ファイルです。
+
+確認準備と適用を分割し、再表示時には保存済みの状態を復元します。通常の進捗・履歴はCloud Loggingを使いません。任意のCloud出力は既定OFFのため、実際の運用Cloudプロジェクトを確認するまでは有効化しません。[処理・復旧・ログの設定](background-jobs.md)を参照してください。

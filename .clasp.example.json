@@ -7,6 +7,8 @@
     "src/Sheets.js",
     "src/Gmail.js",
     "src/Messages.js",
+    "src/Jobs.js",
+    "src/Logging.js",
     "src/Runtime.js",
     "src/Menu.js",
     "src/Web.js"

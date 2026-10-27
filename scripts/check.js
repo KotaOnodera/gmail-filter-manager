@@ -5,16 +5,19 @@ const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const manifest=JSON.parse(read('appsscript.json'));
 assert.equal(manifest.runtimeVersion,'V8');assert.equal(manifest.timeZone,'Asia/Tokyo');
 assert.deepEqual(manifest.dependencies.enabledAdvancedServices,[{userSymbol:'Gmail',version:'v1',serviceId:'gmail'},{userSymbol:'Sheets',version:'v4',serviceId:'sheets'}]);
-const suffixes=['gmail.settings.basic','gmail.labels','gmail.modify','spreadsheets','script.container.ui','userinfo.email'];
+const suffixes=['gmail.settings.basic','gmail.labels','gmail.modify','spreadsheets','script.container.ui','script.scriptapp','userinfo.email'];
 assert.deepEqual(manifest.oauthScopes.slice().sort(),suffixes.map(s=>'https://www.googleapis.com/auth/'+s).sort());
-const sources=['Core','Labels','Sync','Sheets','Gmail','Messages','Runtime','Menu','Web'].map(s=>'src/'+s+'.js');
+const sources=['Core','Labels','Sync','Sheets','Gmail','Messages','Jobs','Logging','Runtime','Menu','Web'].map(s=>'src/'+s+'.js');
 const context=vm.createContext({});
 for(const source of sources.slice().reverse()){
   const code=read(source);new vm.Script(code,{filename:source}).runInContext(context);
   if(source!=='src/Gmail.js')assert.ok(!/\.Messages\./.test(code),'Message API only belongs in Gmail adapter');
   if(source==='src/Gmail.js')assert.deepEqual([...code.matchAll(/service\.Users\.Messages\.(\w+)/g)].map(m=>m[1]).sort(),['batchModify','list']);
-  assert.ok(!/GmailApp|\.Threads\.|\.Labels\.remove|UrlFetchApp|newTrigger\(/.test(code),'Unexpected capability: '+source);
+  assert.ok(!/GmailApp|\.Threads\.|\.Labels\.remove|UrlFetchApp/.test(code),'Unexpected capability: '+source);
 }
+assert.equal(vm.runInContext('typeof GFM_runFilterJob',context),'function');
+assert.ok(read('src/Runtime.js').includes("api.newTrigger('GFM_runFilterJob').timeBased().everyMinutes(1)"));
+assert.equal(manifest.exceptionLogging,'NONE');assert.deepEqual(manifest.webapp,{access:'MYSELF',executeAs:'USER_ACCESSING'});
 assert.equal(vm.runInContext('typeof onOpen',context),'function');
 for(const callback of ['setup','import','preview','apply','verify','history','backup'])assert.equal(vm.runInContext('typeof GFM_'+callback,context),'function');
 const ignore=read('.claspignore').split('\n').map(s=>s.trim()).filter(Boolean);

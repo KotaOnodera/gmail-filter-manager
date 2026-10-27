@@ -107,6 +107,38 @@ var GFMSheets = (function () {
       const patch={UserLabelRef:ref?JSON.stringify(ref):''};if(ref)patch.UserLabel=ref.name;
       atomicFields('Filters','GFM',key,patch);const found=readRows().find(r=>r.RuleKey===key);if(!found||Object.keys(patch).some(k=>String(found[k])!==patch[k]))throw Error('参照名の読み返しが一致しません');
     }
+    function batchJobPatches(patches,expectedRows,expectedLabels){
+      if(!Array.isArray(patches)||patches.length>25)throw Error('参照・メタデータ更新は25行以内です');
+      const L=typeof module!=='undefined'?require('./Labels'):GFMLabels;
+      const before={Filters:readRows(),Labels:readLabelRows()},expected={Filters:C.clone(expectedRows),Labels:C.clone(expectedLabels)},after=C.clone(expected);
+      const anchors={};const data=[],seen=new Set();
+      for(const p of patches){
+        const name=p.kind==='LABEL'?'Labels':'Filters',keyField=p.kind==='LABEL'?'LabelKey':'RuleKey',metadata=p.kind==='LABEL'?'GFM_LABEL':'GFM';
+        if(seen.has(name+':'+p.key))throw Error('更新キーが重複しています');seen.add(name+':'+p.key);
+        const original=expected[name].filter(r=>r[keyField]===p.key),actual=before[name].filter(r=>r[keyField]===p.key),target=after[name].filter(r=>r[keyField]===p.key);
+        if(original.length!==1||actual.length!==1)throw Error('更新する行のキーが不明です');
+        const allowed=name==='Labels'?['GmailLabelId','SyncedName','SyncedAt','Result']:p.reference?['UserLabel','UserLabelRef']:C.columns.filter(k=>!C.editable.includes(k)&&k!=='RuleKey');
+        const values=Array(schemas[name].length).fill(null);
+        for(const [field,value]of Object.entries(p.values)){
+          if(!allowed.includes(field)||stringify(value).length>limit)throw Error('更新列またはセル長が不正です');
+          // A previous API response may have been lost after some intended cells
+          // were written. Only approved old/new values are accepted on replay.
+          if(stringify(actual[0][field])!==stringify(original[0][field])&&stringify(actual[0][field])!==stringify(value))throw Error('実行中にシートが変更されています');
+          actual[0][field]=original[0][field];target[0][field]=stringify(value);values[schemas[name].indexOf(field)]=stringify(value);
+        }
+        if(!anchors[name])anchors[name]=sheet(name).createDeveloperMetadataFinder().withKey(metadata).find();
+        const match=anchors[name].filter(m=>m.getValue()===token(p.key));if(match.length!==1)throw Error('行メタデータが不明または重複しています');
+        data.push({dataFilter:{developerMetadataLookup:{metadataId:match[0].getId()}},majorDimension:'ROWS',values:[values]});
+      }
+      const cfg=t=>C.stable({filters:C.config(t.Filters),labels:L.config(t.Labels)});
+      if(cfg(before)!==cfg(expected))throw Error('実行中にシートの定義が変更されています');
+      if(!data.length)return;
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data},d.book.getId());
+      if(!response||response.totalUpdatedRows!==patches.length)throw Error('一括メタデータ更新の件数が一致しません');
+      // No flush per row: the Values API completes its batch before readback.
+      const actual={Filters:readRows(),Labels:readLabelRows()};if(cfg(actual)!==cfg(after))throw Error('一括更新の読み返しが一致しません');
+      for(const p of patches){const name=p.kind==='LABEL'?'Labels':'Filters',field=p.kind==='LABEL'?'LabelKey':'RuleKey',r=actual[name].find(r=>r[field]===p.key);if(!r||Object.keys(p.values).some(k=>stringify(r[k])!==stringify(p.values[k])))throw Error('一括更新のシステム列読み返しが一致しません');}
+    }
     function chunkRows(id,at,kind,filterId,text) {
       const parts=Math.max(1,Math.ceil(text.length/limit)),hash=d.hash(text);
       return Array.from({length:parts},(_,i)=>[id,at,kind,filterId,i+1,parts,text.slice(i*limit,(i+1)*limit),hash]);
@@ -121,20 +153,23 @@ var GFMSheets = (function () {
     }
     function blob(text) {
       const id='blob-'+d.uuid();append('Backup',chunkRows(id,new Date().toISOString(),'BLOB','',text));
-      if(assemble(records('Backup').filter(r=>r.SnapshotId===id&&r.Kind==='BLOB'))!==text)throw new Error('メタデータの保存失敗');
+      if(assemble(blobRecords(id))!==text)throw new Error('メタデータの保存失敗');
       return 'gfm-blob:'+id;
     }
-    function blobRecords(id) {
+    function snapshotRecords(id) {
       const s=sheet('Backup'),n=s.getLastRow()-1;if(n<1)return [];
-      // Search IDs on the server. Do not download historical message pages to decode a filter.
-      const matches=s.getRange(2,1,n,1).createTextFinder(id).matchEntireCell(true).matchCase(true).useRegularExpression(false).findAll();
-      return matches.map(match=>{
-        const range=s.getRange(match.getRow(),1,1,schemas.Backup.length);
-        if(range.getFormulas()[0].some(Boolean))throw new Error('メタデータの保存行に数式があります');
-        const values=range.getValues()[0],record=Object.fromEntries(schemas.Backup.map((k,i)=>[k,values[i]]));
-        if(record.SnapshotId!==id||record.Kind!=='BLOB')throw new Error('メタデータの保存先が一致しません');return record;
-      });
+      // Locate only this immutable ID; do not transfer historical checkpoint or
+      // message bodies. Coalesce adjacent rows into one range read.
+      const indices=s.getRange(2,1,n,1).createTextFinder(id).matchEntireCell(true).matchCase(true).useRegularExpression(false).findAll().map(r=>r.getRow()).sort((a,b)=>a-b),groups=[];
+      for(const row of indices){const last=groups[groups.length-1];if(last&&last.end+1===row)last.end=row;else groups.push({start:row,end:row});}
+      const result=[];
+      for(const group of groups){const range=s.getRange(group.start,1,group.end-group.start+1,schemas.Backup.length);
+        if(range.getFormulas().some(r=>r.some(Boolean)))throw Error('メタデータの保存行に数式があります');
+        for(const values of range.getValues()){const record=Object.fromEntries(schemas.Backup.map((k,i)=>[k,values[i]]));if(record.SnapshotId!==id)throw Error('メタデータの保存先が一致しません');result.push(record);}
+      }
+      return result;
     }
+    function blobRecords(id){const records=snapshotRecords(id);if(records.some(r=>r.Kind!=='BLOB'))throw Error('メタデータの保存種別が一致しません');return records;}
     function decodeBlob(value) {
       if(typeof value==='string'&&value.startsWith('gfm-blob:'))return assemble(blobRecords(value.slice(9)));
       return value;
@@ -191,7 +226,7 @@ var GFMSheets = (function () {
       raw.forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();ensureAnchors();
     }
     function decodeSnapshot(id,requireComplete) {
-      const all=records('Backup').filter(r=>r.SnapshotId===id);
+      const all=snapshotRecords(id);
       if(requireComplete&&all.filter(r=>r.Kind==='COMPLETE').length!==1)throw new Error('バックアップの完了マーカーがありません/不完全です');
       const context=JSON.parse(assemble(all.filter(r=>r.Kind==='CONTEXT')));
       const manifest=JSON.parse(assemble(all.filter(r=>r.Kind==='MANIFEST')));
@@ -203,7 +238,7 @@ var GFMSheets = (function () {
       return result;
     }
     function backup(state,id,at) {
-      if(records('Backup').some(r=>r.SnapshotId===id))throw new Error('SnapshotIdの上書きは禁止');
+      if(snapshotRecords(id).length)throw new Error('SnapshotIdの上書きは禁止');
       const hash=d.hash(C.stable(C.remote(state)));
       const values=[...chunkRows(id,at,'CONTEXT','',JSON.stringify({labels:state.labels,forwarding:state.forwarding}))];
       state.filters.forEach(f=>values.push(...chunkRows(id,at,'FILTER',f.id,JSON.stringify(f))));
@@ -212,9 +247,9 @@ var GFMSheets = (function () {
       append('Backup',[[id,at,'COMPLETE','',1,1,JSON.stringify({count:state.filters.length}),hash]]);
       decodeSnapshot(id,true);return {id,hash,count:state.filters.length};
     }
-    function readScope(id){return JSON.parse(assemble(records('Backup').filter(r=>r.SnapshotId===id&&r.Kind==='SCOPE')));}
+    function readScope(id){return JSON.parse(assemble(snapshotRecords(id).filter(r=>r.Kind==='SCOPE')));}
     function writeScope(id,keys,at){
-      const all=records('Backup').filter(r=>r.SnapshotId===id);
+      const all=snapshotRecords(id);
       if(all.filter(r=>r.Kind==='COMPLETE').length!==1||all.some(r=>r.Kind==='SCOPE'))throw new Error('選択対象の保存先が不完全か保存済みです');
       const text=JSON.stringify(keys);append('Backup',chunkRows(id,at,'SCOPE','',text));if(C.stable(readScope(id))!==C.stable(keys))throw new Error('選択対象の読み返しが一致しません');
     }
@@ -244,7 +279,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};

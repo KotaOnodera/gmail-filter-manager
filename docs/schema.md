@@ -91,3 +91,7 @@ DocumentPropertiesのGFM:preview、GFM:prepared、GFM:pending、GFM:labelPending
 ## 選択適用の記録
 
 BackupのKind=SCOPEは、同じSnapshotIdのバックアップに結び付いた、依存するラベルのlabel:キーを含む選択キーのJSON配列です。他のバックアップと同様にPart/Parts/Hashで分割・検証し、一度保存した集合を上書きしません。承認状態は集合そのものを持たず、そのハッシュと件数を保持します。
+
+## Issue #5 の承認・ジョブデータ
+
+新しいシートは追加しません。Backupの既存のハッシュ付き分割保存形式を使い、承認済み定義・大きな元JSON・スコープ・実行チェックポイントを追記します。`MESSAGES` Kindは共通の分割データ搬送形式でも使います。Script Propertiesは小さなポインターと所有者・対象ブック・ステージ・件数・期限のみです。メタデータ更新意図は更新前に保存し、応答消失を照合してからCOMMITします。保管量と保持については[バックグラウンドジョブ](background-jobs.md)を参照してください。
