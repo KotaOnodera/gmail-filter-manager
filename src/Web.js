@@ -41,7 +41,7 @@ var GFMWeb = (function () {
       input=input||{};if(typeof input!=='object'||Array.isArray(input))throw new Error('入力形式が不正です');
       // Read only small owner-scoped checkpoints; status must remain available while a write owns the lock.
       if(action==='resume')return resume(input.requestId);
-      if(action==='boot'){const last=d.state.get('webOutcome');return {filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,status:p.status,phase:p.phase}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+      if(action==='boot'){const last=d.state.get('webOutcome');return {filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
       if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
       if(action==='prepareStatus'&&d.jobs){const p=d.jobs.prepareStatus(input.preparationId);if(p.status!=='READY')return p;const old=d.state.get('webApproval');return {...p,...p.ticket,token:old&&old.ticket.runId===p.ticket.runId?old.token:confirmation('webApproval',p.ticket)};}
       return d.withLock(()=>tracked(action,input,()=>{

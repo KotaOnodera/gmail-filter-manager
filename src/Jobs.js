@@ -10,7 +10,7 @@ var GFMJobs=(function(){
     function identity(j){if(j.actor!==d.actor()||j.bookId!==d.bookId)throw Error('保存済みジョブの実行者・所有者またはスプレッドシートが一致しません');}
     function head(j){j.updatedAt=d.now();d.state.set('filterJob',j);}
     function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase})});}catch(_){j.historyWarning=true;head(j);}}
-    function view(j){return C.clone({runId:j.runId,status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,job:true});}
+    function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,job:true});}
     function accept(ticket,approved){
       const old=d.state.get('filterJob');
       if(old){identity(old);if(old.runId===ticket.runId)return view(old);if(!terminal(old)||old.uncertain||old.status==='PAUSED'&&old.intentPhase&&ticket.previousRunId!==old.runId)throw Error('保存済みジョブの進捗・結果不明を先に確認してください');}
@@ -47,6 +47,14 @@ var GFMJobs=(function(){
       const a=d.store.readJobData(j.ticket.jobApproval);
       return prepareStart({keys:a.keys.filter(Boolean),previousRunId:runId});
     }
+    function recoverAssociation(kind,key,approvedId,reconciledId,values){
+      // Editable definitions may change before fresh confirmation; identity may
+      // only be the approved association or the uniquely reconciled receipt.
+      const rows=d.store.readRows(),labels=d.store.readLabelRows(),field=kind==='LABEL'?'GmailLabelId':'GmailFilterId',keyField=kind==='LABEL'?'LabelKey':'RuleKey',matches=(kind==='LABEL'?labels:rows).filter(r=>r[keyField]===key);
+      if(matches.length!==1||![approvedId||'',reconciledId||''].includes(matches[0][field]||''))throw Error('復旧対象のID関連付けが変更されています。上書きせず確認してください');
+      if(d.store.batchJobPatches)d.store.batchJobPatches([{kind,key,values}],rows,labels);
+      else if(kind==='LABEL')d.store.updateLabelRow(key,values);else d.store.updateRow(key,values);
+    }
     function recoveryForPreparation(runId){
       const j=d.state.get('filterJob');if(!j||j.runId!==runId||!terminal(j))throw Error('復旧元のジョブが変化しています');identity(j);
       const a=d.store.readJobData(j.ticket.jobApproval),m=j.checkpoint?d.store.readJobData(j.checkpoint):null,i=m?.intent;
@@ -57,7 +65,8 @@ var GFMJobs=(function(){
         const known=new Set(a.state.labels.map(l=>l.id)),id=intent.newId||e.matchedId;
         const candidates=live.labels.filter(l=>l.type==='user'&&(id?l.id===id:e.operation==='CREATE'?!known.has(l.id)&&l.name===e.after.name:l.id===e.after.id&&l.name===e.after.name));
         if(candidates.length!==1)throw Error('ラベルの結果不明を解決できません。再作成せず履歴を確認してください');
-        d.store.updateLabelRow(e.labelKey,{GmailLabelId:candidates[0].id,SyncedName:candidates[0].name,SyncedAt:stamp(),Result:'復旧確認済み'});
+        const original=a.labelRows.filter(r=>r.LabelKey===e.labelKey);if(original.length!==1)throw Error('承認したラベルのキーが一意ではありません');
+        recoverAssociation('LABEL',e.labelKey,original[0].GmailLabelId,candidates[0].id,{GmailLabelId:candidates[0].id,SyncedName:candidates[0].name,SyncedAt:stamp(),Result:'復旧確認済み'});
       }else{
         let id=intent.newId||e.matchedId||'';
         if(['CREATE','CREATED'].includes(intent.phase)||['CREATE','REPLACE'].includes(e.operation)){
@@ -69,7 +78,8 @@ var GFMJobs=(function(){
         }else if(e.operation==='DELETE'){
           const old=live.filters.find(f=>f.id===e.before.id);if(old&&!C.equal(old,e.before))throw Error('削除対象が変更されています');id=old?e.before.id:e.keepId||'';
         }
-        d.store.updateRow(e.ruleKey,{GmailFilterId:id,SyncedAt:stamp(),Result:'復旧確認済み・残りを再確認'});
+        const original=a.rows.filter(r=>r.RuleKey===e.ruleKey);if(original.length!==1)throw Error('承認したフィルターのキーが一意ではありません');
+        recoverAssociation('FILTER',e.ruleKey,original[0].GmailFilterId,id,{GmailFilterId:id,SyncedAt:stamp(),Result:'復旧確認済み・残りを再確認'});
       }
       j.uncertain=0;j.recovered=true;head(j);return extras;
     }
@@ -108,15 +118,8 @@ var GFMJobs=(function(){
       if(j.status==='RUNNING'&&j.leaseUntil>d.now())return view(j);
       if(d.now()-j.createdAt>24*60*60*1000||j.runs>=1000||j.attempts>=5){j.status='PAUSED';j.error='自動継続の上限に達しました。残りの差分を再確認してください';head(j);d.scheduler.clear();history(j,'PAUSED');return view(j);}
       j.status='RUNNING';j.heartbeat=d.now();j.leaseUntil=d.now()+150000;j.runs++;head(j);
-      let m=j.checkpoint?d.store.readJobData(j.checkpoint):{filterPatches:{},labelPatches:{},createdFilters:[],deletedFilters:[],labelChanges:{},cursor:0,refCursor:0,intent:null};
-      const a=d.store.readJobData(j.ticket.jobApproval);
-      let rs=C.clone(a.rows),ls=C.clone(a.labelRows),state=C.clone(a.state);
-      rs.forEach(r=>Object.assign(r,m.filterPatches[r.RuleKey]||{}));ls.forEach(r=>Object.assign(r,m.labelPatches[r.LabelKey]||{}));
-      state.filters=state.filters.filter(f=>!m.deletedFilters.includes(f.id)).concat(C.clone(m.createdFilters));
-      Object.values(m.labelChanges).forEach(l=>{const i=state.labels.findIndex(x=>x.id===l.id);if(i<0)state.labels.push(l);else state.labels[i]=l;});
-      const entries=a.entries.filter(e=>changed(e)),labelEntries=entries.filter(e=>e.kind==='LABEL');
-      j.filters.planned=entries.length-labelEntries.length;j.labels.planned=labelEntries.length;
-      function counts(){j.filters.completed=entries.slice(0,m.cursor).filter(e=>e.kind!=='LABEL').length;j.labels.completed=entries.slice(0,m.cursor).filter(e=>e.kind==='LABEL').length;j.filters.remaining=j.filters.planned-j.filters.completed;j.labels.remaining=j.labels.planned-j.labels.completed;}
+      let m=null,a=null,rs,ls,state,entries,loaded=false;
+      function counts(){if(!loaded)return;j.filters.completed=entries.slice(0,m.cursor).filter(e=>e.kind!=='LABEL').length;j.labels.completed=entries.slice(0,m.cursor).filter(e=>e.kind==='LABEL').length;j.filters.remaining=j.filters.planned-j.filters.completed;j.labels.remaining=j.labels.planned-j.labels.completed;}
       function save(){counts();j.intentPhase=m.intent?.phase||'';j.checkpoint=d.store.writeJobData(j.runId,m);j.heartbeat=d.now();head(j);}
       function measure(code,fn){const started=d.now();try{return fn();}finally{const elapsedMs=Math.max(0,d.now()-started);j.timings[code]=(j.timings[code]||0)+elapsedMs;if(d.logger){d.logger.emit(j.runId,'TIMING',code,{elapsedMs});if(elapsedMs>=10000)d.logger.emit(j.runId,'SLOW',code,{elapsedMs});}}}
       function pause(message,uncertain){const e=Error(message);e.pause=true;e.uncertain=uncertain?1:0;throw e;}
@@ -203,6 +206,20 @@ var GFMJobs=(function(){
         });
       }
       try{
+      m=j.checkpoint?d.store.readJobData(j.checkpoint):{filterPatches:{},labelPatches:{},createdFilters:[],deletedFilters:[],labelChanges:{},cursor:0,refCursor:0,intent:null};
+      a=d.store.readJobData(j.ticket.jobApproval);
+        try{
+        const record=v=>v&&typeof v==='object'&&!Array.isArray(v);
+        if(!record(a)||!Array.isArray(a.rows)||!Array.isArray(a.labelRows)||!record(a.state)||!['filters','labels','forwarding'].every(k=>Array.isArray(a.state[k]))||!Array.isArray(a.entries)||!Array.isArray(a.keys)||!record(a.bindings))throw Error('approval shape');
+        if(!record(m)||!['filterPatches','labelPatches','labelChanges'].every(k=>record(m[k]))||!['createdFilters','deletedFilters'].every(k=>Array.isArray(m[k]))||!Number.isSafeInteger(m.cursor)||m.cursor<0||!Number.isSafeInteger(m.refCursor)||m.refCursor<0||m.intent&&(!record(m.intent)||!['CREATE','CREATED','DELETE','LABEL','DONE','PATCH','COMMIT'].includes(m.intent.phase)))throw Error('checkpoint shape');
+      rs=C.clone(a.rows);ls=C.clone(a.labelRows);state=C.clone(a.state);
+      rs.forEach(r=>Object.assign(r,m.filterPatches[r.RuleKey]||{}));ls.forEach(r=>Object.assign(r,m.labelPatches[r.LabelKey]||{}));
+      state.filters=state.filters.filter(f=>!m.deletedFilters.includes(f.id)).concat(C.clone(m.createdFilters));
+      Object.values(m.labelChanges).forEach(l=>{const i=state.labels.findIndex(x=>x.id===l.id);if(i<0)state.labels.push(l);else state.labels[i]=l;});
+      entries=a.entries.filter(e=>changed(e));const labelEntries=entries.filter(e=>e.kind==='LABEL');
+      j.filters.planned=entries.length-labelEntries.length;j.labels.planned=labelEntries.length;
+          if(m.cursor>entries.length)throw Error('cursor');loaded=true;
+        }catch(_){const e=Error('保存済みジョブの形式が破損しています。検証してから再確認してください');e.code='GFM_DATA_INTEGRITY';throw e;}
         // Each preparation stage gets its own execution; mutation stages are bounded
         // by elapsed time AND a small stage count, including reconciliation/checkpoints.
         const start=d.now(),preparing=!['APPLY','FINAL_REFERENCES','VERIFY'].includes(j.phase);
@@ -215,7 +232,7 @@ var GFMJobs=(function(){
           }else step();
         }
         if(!terminal(j)){j.status='WAITING';j.leaseUntil=0;j.attempts=0;save();}
-      }catch(err){j.attempts++;j.status=err.pause?'PAUSED':'WAITING';j.error=err.pause?err.message:'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||(['CREATE','DELETE','LABEL'].includes(m.intent?.phase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
+      }catch(err){j.attempts++;const invalid=err.code==='GFM_DATA_INTEGRITY';j.status=err.pause||invalid||j.attempts>=5?'PAUSED':'WAITING';j.error=invalid?'保存済みジョブの検証に失敗しました。破損したデータを再適用せず確認してください':err.pause?err.message:j.attempts>=5?'保存済みジョブの読取・実行障害が続いたため停止しました。状態を確認してください':'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||j.uncertain||(['CREATE','DELETE','LABEL'].includes(m?.intent?.phase||j.intentPhase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
       return view(j);
     });}
     return {prepareRemaining,prepareStart,prepareStatus,accept,status,run};

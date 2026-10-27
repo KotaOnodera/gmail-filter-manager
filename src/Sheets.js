@@ -143,13 +143,14 @@ var GFMSheets = (function () {
       const parts=Math.max(1,Math.ceil(text.length/limit)),hash=d.hash(text);
       return Array.from({length:parts},(_,i)=>[id,at,kind,filterId,i+1,parts,text.slice(i*limit,(i+1)*limit),hash]);
     }
+    function dataIntegrity(message){const error=Error(message);error.code='GFM_DATA_INTEGRITY';return error;}
     function assemble(rs) {
-      if(!rs.length)throw new Error('バックアップが不完全です');
+      if(!rs.length)throw dataIntegrity('バックアップが不完全です');
       const n=Number(rs[0].Parts),hash=rs[0].Hash;
-      if(!Number.isSafeInteger(n)||n<1||rs.length!==n||rs.some(r=>Number(r.Parts)!==n||r.Hash!==hash))throw new Error('バックアップの分割データが不完全です');
+      if(!Number.isSafeInteger(n)||n<1||rs.length!==n||rs.some(r=>Number(r.Parts)!==n||r.Hash!==hash))throw dataIntegrity('バックアップの分割データが不完全です');
       rs=rs.slice().sort((a,b)=>Number(a.Part)-Number(b.Part));
-      if(rs.some((r,i)=>Number(r.Part)!==i+1))throw new Error('バックアップの分割番号が破損しています');
-      const text=rs.map(r=>r.Json).join('');if(d.hash(text)!==hash)throw new Error('バックアップのハッシュが不一致・破損しています');return text;
+      if(rs.some((r,i)=>Number(r.Part)!==i+1))throw dataIntegrity('バックアップの分割番号が破損しています');
+      const text=rs.map(r=>r.Json).join('');if(d.hash(text)!==hash)throw dataIntegrity('バックアップのハッシュが不一致・破損しています');return text;
     }
     function blob(text) {
       const id='blob-'+d.uuid();append('Backup',chunkRows(id,new Date().toISOString(),'BLOB','',text));
@@ -255,12 +256,12 @@ var GFMSheets = (function () {
     }
     function readMessageData(pointer) {
       const p=pointer,s=sheet('Backup');
-      if(!p||!Number.isSafeInteger(p.row)||p.row<2||!Number.isSafeInteger(p.parts)||p.parts<1||p.parts>1000||p.row+p.parts-1>s.getLastRow())throw new Error('既存メールの保存先が不正です');
+      if(!p||!Number.isSafeInteger(p.row)||p.row<2||!Number.isSafeInteger(p.parts)||p.parts<1||p.parts>1000||p.row+p.parts-1>s.getLastRow())throw dataIntegrity('既存メールの保存先が不正です');
       const range=s.getRange(p.row,1,p.parts,schemas.Backup.length);
-      if(range.getFormulas().some(r=>r.some(Boolean)))throw new Error('保存済みの既存メールデータに数式があります');
+      if(range.getFormulas().some(r=>r.some(Boolean)))throw dataIntegrity('保存済みの既存メールデータに数式があります');
       const rs=range.getValues().map(r=>Object.fromEntries(schemas.Backup.map((k,i)=>[k,r[i]])));
-      if(rs.some(r=>r.SnapshotId!==p.runId||r.Kind!=='MESSAGES'||r.GmailFilterId!==p.id||r.Hash!==p.hash))throw new Error('既存メールの保存済みデータが変更されています');
-      return JSON.parse(assemble(rs));
+      if(rs.some(r=>r.SnapshotId!==p.runId||r.Kind!=='MESSAGES'||r.GmailFilterId!==p.id||r.Hash!==p.hash))throw dataIntegrity('既存メールの保存済みデータが変更されています');
+      const text=assemble(rs);try{return JSON.parse(text);}catch(_){throw dataIntegrity('保存済みデータのJSONが破損しています');}
     }
     function writeMessageData(runId,value) {
       const text=JSON.stringify(value),id=d.uuid(),s=sheet('Backup');

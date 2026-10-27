@@ -30,3 +30,14 @@ test('backup validation and scope receipt reads never download historical job/me
  const sheet=f.sheets.get('Backup'),range=sheet.getRange.bind(sheet);sheet.getRange=(...a)=>{const r=range(...a),get=r.getValues.bind(r);r.getValues=()=>{if(a[1]===1&&a[3]===8){const values=get();if(values.some(v=>v[2]==='MESSAGES'))throw Error('historical payload must not be downloaded');return values;}return get();};return r;};
  assert.deepEqual(store.readBackup('snapshot'),state);assert.deepEqual(store.readScope('snapshot'),[key]);
 });
+test('job data integrity errors are typed while service availability failures remain retryable',()=>{
+ const f=fakeSheets(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();const pointer=store.writeJobData('run',{checkpoint:true});
+ const sheet=f.sheets.get('Backup');sheet.values[pointer.row-1][6]='corrupt';assert.throws(()=>store.readJobData(pointer),e=>e.code==='GFM_DATA_INTEGRITY');
+ const range=sheet.getRange.bind(sheet);sheet.getRange=(...a)=>{const r=range(...a);r.getValues=()=>{throw Error('temporary service failure');};return r;};assert.throws(()=>store.readJobData(pointer),e=>!e.code&&e.message==='temporary service failure');
+});
+test('real sheet continuation guards changed association while permitting a newly edited definition',()=>{
+ const f=fakeSheets(),h=harness(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows(h.rows);const sheet=f.sheets.get('Filters'),subject=C.columns.indexOf('Subject'),id=C.columns.indexOf('GmailFilterId');sheet.values[1][subject]='approved';
+ const deps={...h.deps,store,bookId:'book',withLock:fn=>fn(),scheduler:{ensure(){},exists:()=>true,clear(){}}},jobs=J.create(deps),sync=Sync.create(deps);sync.preview();const ticket=sync.prepare();jobs.accept(ticket,true);const create=deps.gmail.create;deps.gmail.create=value=>{const result=create(value);sheet.values[1][subject]='new edited definition';return result;};
+ for(let n=0;n<20&&jobs.status().status!=='PAUSED';n++)jobs.run();assert.equal(jobs.status().status,'PAUSED');sheet.values[1][id]='user-id';let p=jobs.prepareRemaining(ticket.runId);jobs.run();assert.equal(jobs.prepareStatus(p.preparationId).status,'PAUSED');assert.equal(store.readRows()[0].GmailFilterId,'user-id');
+ sheet.values[1][id]='old';p=jobs.prepareRemaining(ticket.runId);for(let n=0;n<4;n++)jobs.run();const ready=jobs.prepareStatus(p.preparationId);assert.equal(ready.status,'READY');assert.equal(store.readRows()[0].Subject,'new edited definition');assert.equal(store.readRows()[0].GmailFilterId,'new-1');assert.ok(ready.entries.some(e=>e.jobCleanup));assert.equal(h.writes.length,1);
+});

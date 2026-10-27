@@ -93,3 +93,26 @@ test('a present trigger with no heartbeat is repaired only a bounded number of t
  for(let n=0;n<3;n++){h.tick(6*60*1000);const v=h.jobs.status();assert.equal(v.status,'WAITING');assert.equal(v.recovered,true);}
  h.tick(6*60*1000);const v=h.jobs.status();assert.equal(v.status,'PAUSED');assert.match(v.error,/トリガー|自動実行/);assert.equal(h.triggers.size,0);
 });
+test('checkpoint integrity failure pauses, records reason and preserves the trustworthy receipt',()=>{
+ const h=fixture();h.jobs.accept(h.ticket,true);h.jobs.run();const before=C.clone(h.props.filterJob),read=h.deps.store.readJobData;
+ h.deps.store.readJobData=p=>{if(p.id===before.checkpoint.id){const e=Error('saved data corrupt');e.code='GFM_DATA_INTEGRITY';throw e;}return read(p);};
+ let result;assert.doesNotThrow(()=>{result=h.jobs.run();});assert.equal(result.status,'PAUSED');assert.equal(h.props.filterJob.attempts,1);assert.equal(h.props.filterJob.leaseUntil,0);assert.match(result.error,/保存|検証|破損/);assert.deepEqual(h.props.filterJob.checkpoint,before.checkpoint);assert.equal(h.triggers.size,0);assert.equal(h.history.at(-1).result,'PAUSED');assert.equal(h.writes.length,0);
+});
+test('transient checkpoint read failure is retried at most five times with uncertainty intact',()=>{
+ const h=fixture();h.jobs.accept(h.ticket,true);h.jobs.run();const checkpoint=C.clone(h.props.filterJob.checkpoint);h.props.filterJob.intentPhase='CREATE';h.props.filterJob.uncertain=1;
+ h.deps.store.readJobData=()=>{throw Error('Spreadsheet service temporarily unavailable');};
+ for(let n=1;n<=5;n++){let v;assert.doesNotThrow(()=>{v=h.jobs.run();});assert.equal(v.status,n===5?'PAUSED':'WAITING');assert.equal(h.props.filterJob.attempts,n);assert.equal(v.uncertain,1);assert.deepEqual(h.props.filterJob.checkpoint,checkpoint);assert.equal(h.history.at(-1).result,v.status);}
+ assert.equal(h.triggers.size,0);assert.equal(h.writes.length,0);
+});
+test('malformed loaded approval pauses instead of escaping the worker',()=>{
+ const h=fixture();h.jobs.accept(h.ticket,true);h.blobs.set(h.ticket.jobApproval.id,{rows:'corrupt'});let result;assert.doesNotThrow(()=>{result=h.jobs.run();});assert.equal(result.status,'PAUSED');assert.match(result.error,/保存|検証|破損/);assert.equal(h.writes.length,0);
+});
+test('remaining confirmation refuses an intervening filter ID association edit',()=>{
+ const h=fixture();h.jobs.accept(h.ticket,true);const create=h.deps.gmail.create;h.deps.gmail.create=f=>{const result=create(f);h.rows[0].Subject='edited';return result;};assert.equal(h.drain().status,'PAUSED');
+ h.rows[0].GmailFilterId='user-chosen-id';const before=h.writes.length,p=h.jobs.prepareRemaining(h.ticket.runId);h.jobs.run();assert.equal(h.jobs.prepareStatus(p.preparationId).status,'PAUSED');assert.equal(h.rows[0].GmailFilterId,'user-chosen-id');assert.equal(h.writes.length,before);
+});
+test('remaining confirmation refuses an intervening label ID association edit',()=>{
+ const lk='22222222-2222-4222-8222-222222222222',h=fixture({labelRows:[{LabelKey:lk,Name:'fresh',GmailLabelId:''}]});const c=S.create(h.deps);c.preview();const ticket=c.prepare();h.jobs.accept(ticket,true);const create=h.deps.gmail.createLabel;
+ h.deps.gmail.createLabel=name=>{const result=create(name);h.labelRows[0].Name='edited label';return result;};assert.equal(h.drain().status,'PAUSED');
+ h.labelRows[0].GmailLabelId='user-chosen-label';const before=h.writes.length,p=h.jobs.prepareRemaining(ticket.runId);h.jobs.run();assert.equal(h.jobs.prepareStatus(p.preparationId).status,'PAUSED');assert.equal(h.labelRows[0].GmailLabelId,'user-chosen-label');assert.equal(h.writes.length,before);
+});
