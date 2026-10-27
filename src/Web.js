@@ -12,10 +12,23 @@ var GFMWeb = (function () {
     function configHash(rows,labels){return d.hash(C.stable({filters:C.config(rows||d.store.readRows()),labels:L.config(labels||d.store.readLabelRows())}));}
     function owned(h){return h&&h.actor===d.actor()&&h.bookId===d.bookId;}
     function locator(h){return {viewId:h.viewId,runId:h.runId,action:h.action};}
+    function retireView(h){
+      if(!owned(h))return;
+      try{d.store.removeWebView(h.pointer);d.state.remove('webView:'+h.viewId);}
+      catch(_){
+        // Unverified cells must stay intact; one bad disposable view must not
+        // prevent fresh confirmation. Keep only a bounded audit locator set.
+        const ids=d.state.get('webViewQuarantineIndex')||[];
+        if(!ids.includes(h.viewId))ids.push(h.viewId);
+        d.state.set('webView:'+h.viewId,{...h,quarantinedAt:now()});
+        while(ids.length>12){const id=ids.shift(),old=d.state.get('webView:'+id);if(owned(old)&&old.quarantinedAt!==undefined)d.state.remove('webView:'+id);}
+        d.state.set('webViewQuarantineIndex',ids);
+      }
+    }
     function pruneViews(){
       const ids=d.state.get('webViewIndex')||[],keep=[];
-      for(const id of ids){const h=d.state.get('webView:'+id);if(!owned(h)){keep.push(id);continue;}if(now()-h.at<=viewTTL){keep.push(id);continue;}d.store.removeWebView(h.pointer);d.state.remove('webView:'+id);}
-      while(keep.length>=12){const id=keep.shift(),h=d.state.get('webView:'+id);if(owned(h)){d.store.removeWebView(h.pointer);d.state.remove('webView:'+id);}}
+      for(const id of ids){const h=d.state.get('webView:'+id);if(!owned(h)){keep.push(id);continue;}if(now()-h.at<=viewTTL){keep.push(id);continue;}retireView(h);}
+      while(keep.length>=12){const id=keep.shift();retireView(d.state.get('webView:'+id));}
       d.state.set('webViewIndex',keep);return keep;
     }
     function saveView(action,input,result){
@@ -34,17 +47,24 @@ var GFMWeb = (function () {
       h.pointer=d.store.writeWebView(viewId,data);d.state.set('webView:'+viewId,h);ids.push(viewId);d.state.set('webViewIndex',ids);return {...result,_view:locator(h)};
     }
     function readyPreparation(preparationId){
-      const p=d.jobs.prepareStatus(preparationId);if(p.status!=='READY')return p;
-      if(!same(p.ticket,d.state.get('prepared'))||now()-p.ticket.preparedAt>15*60*1000)throw Error('確認が失効しました。差分を再取得してください');
-      const captured=d.store.readJobData(p.ticket.jobApproval);
-      if(configHash(captured.rows,captured.labelRows)!==configHash())throw Error('確認後に設定が変更されています。差分を再取得してください');
-      const old=d.state.get('webApproval');
-      if(old&&old.ticket.runId===p.ticket.runId){checked('webApproval',old.token);return {...p,...p.ticket,token:old.token};}
-      return {...p,...p.ticket,token:confirmation('webApproval',p.ticket)};
+      const progress=d.jobs.prepareStatus(preparationId);if(progress.status!=='READY')return progress;
+      // PREPARING checkpoints remain readable during a running worker. Once
+      // READY, re-read and fence validation plus token issuance against preview,
+      // replacement preparation and apply using the shared operation lock.
+      return d.withLock(()=>{
+        const p=d.jobs.prepareStatus(preparationId);if(p.status!=='READY')return p;
+        if(!same(p.ticket,d.state.get('prepared'))||now()-p.ticket.preparedAt>15*60*1000)throw Error('確認が失効しました。差分を再取得してください');
+        const captured=d.store.readJobData(p.ticket.jobApproval);
+        if(configHash(captured.rows,captured.labelRows)!==configHash())throw Error('確認後に設定が変更されています。差分を再取得してください');
+        const old=d.state.get('webApproval');
+        if(old&&old.ticket.runId===p.ticket.runId){checked('webApproval',old.token);return {...p,...p.ticket,token:old.token};}
+        return {...p,...p.ticket,token:confirmation('webApproval',p.ticket)};
+      });
     }
     function loadView(input){
       const h=typeof input.viewId==='string'&&input.viewId.length<=128?d.state.get('webView:'+input.viewId):null;
       if(!owned(h))return {status:'NOT_FOUND'};
+      if(h.quarantinedAt!==undefined)return {status:'INVALID',action:h.action,error:'保存した画面を検証できませんでした。取得し直してください。'};
       if(input.runId&&input.runId!==h.runId)throw Error('保存した表示の実行IDが一致しません');
       const job=d.state.get('filterJob');if(d.jobs&&owned(job)&&(h.preparationId&&job.ticket?.jobApproval?.runId===h.preparationId||h.action==='prepare'&&h.runId===job.runId))return {status:'JOB',result:d.jobs.status(job.runId)};
       if(now()-h.at>viewTTL)return {status:'EXPIRED',action:h.action};
