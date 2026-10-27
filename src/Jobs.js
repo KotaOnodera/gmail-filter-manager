@@ -16,7 +16,7 @@ var GFMJobs=(function(){
       if(old){identity(old);if(old.runId===ticket.runId)return view(old);if(!terminal(old)||old.uncertain||old.status==='PAUSED'&&old.intentPhase&&ticket.previousRunId!==old.runId)throw Error('保存済みジョブの進捗・結果不明を先に確認してください');}
       const prepared=d.state.get('prepared');
       if(!prepared||C.stable(prepared)!==C.stable(ticket)||!ticket.jobApproval)throw Error('承認準備が失効しました。再確認してください');
-      if(d.now()-ticket.preparedAt>15*60*1000)throw Error('確認の期限が切れました。再確認してください');
+      if(d.now()-ticket.preparedAt>=15*60*1000)throw Error('確認の期限が切れました。再確認してください');
       if(!approved)return {status:'CANCELLED',completed:0,runId:ticket.runId};
       if(d.state.get('pending')||d.state.get('labelPending')||d.state.get('cleanup'))throw Error('中断操作を先に復旧してください');
       const j={runId:ticket.runId,ticket:C.clone(ticket),actor:d.actor(),bookId:d.bookId,status:'ACCEPTED',phase:'SHEET_READ',createdAt:d.now(),updatedAt:d.now(),heartbeat:d.now(),leaseUntil:0,attempts:0,runs:0,timings:{},filters:{planned:ticket.jobCounts?.filters||0,completed:0,remaining:ticket.jobCounts?.filters||0},labels:{planned:ticket.jobCounts?.labels||0,completed:0,remaining:ticket.jobCounts?.labels||0}};

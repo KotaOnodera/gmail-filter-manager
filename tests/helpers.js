@@ -14,9 +14,9 @@ function harness(options={}) {
   let serial=0,time=0;
   const faults={};
   const fail=name=>{if(faults[name]){const f=faults[name];delete faults[name];if(typeof f==='function')f();else throw new Error(name+' failed');}};
-  const views=new Map();
+  const views=new Map();let viewSerial=0;
   const store={
-    writeWebView(id,value){const p={runId:"webview-"+id,id};views.set(id,clone(value));return p;},
+    writeWebView(id,value){const p={runId:"webview-"+id,id:id+"-"+(++viewSerial)};views.set(p.id,clone(value));return p;},
     readWebView(p){if(!views.has(p.id))throw Error("missing view");return clone(views.get(p.id));},
     removeWebView(p){views.delete(p.id);},
     ensureLabelSchema(){},

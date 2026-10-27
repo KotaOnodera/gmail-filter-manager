@@ -3,8 +3,8 @@
 var GFMClientSession=(function(){
   'use strict';
   function create(d){
-    const key='gfm.pendingRequest.v1',tracked=new Set(['importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
-    const readable=new Set(['importCheck','preview','prepare','prepareStart','prepareRemaining','messagesList','messagesPrepare']);
+    const key='gfm.pendingRequest.v1',tracked=new Set(['reconfirm','importCheck','import','preview','prepare','prepareStart','prepareRemaining','apply','messagesList','messagesStart','messagesScan','messagesPrepare','messagesApply','messagesCancel']);
+    const readable=new Set(['reconfirm','importCheck','preview','prepare','prepareStart','prepareRemaining','messagesList','messagesPrepare']);
     const viewKey='gfm.savedView.v1';
     function remember(view){if(!view||typeof view.viewId!=='string')return;try{d.storage?.setItem(viewKey,JSON.stringify({viewId:view.viewId,runId:view.runId||'',action:view.action||''}));}catch(_){}}
     function viewLocator(){try{const v=JSON.parse(d.storage?.getItem(viewKey)||'null');return v&&typeof v.viewId==='string'&&v.viewId.length<=128?v:null;}catch(_){return null;}}
@@ -29,7 +29,7 @@ var GFMClientSession=(function(){
       try{
         const result=await d.request(command,shouldTrack?{...input,_requestId:req.requestId}:input);
         if(ctx&&active!==ctx){if(returning!==ctx)throw stale();active=ctx;returning=null;recovery=null;d.onRecoveredResponse?.(req);}
-        if(shouldTrack)clear(req);if(result?._view)remember(result._view);return result;
+        if(shouldTrack)clear(req);if(result?._view)remember(result._view);else if(result?.result?._view)remember(result.result._view);return result;
       }catch(err){if(ctx&&returning===ctx){returning=null;d.onRecover(req);}throw err;
       }finally{if(ctx&&ctx.request===req&&ctx.timer){clearTimeout(ctx.timer);ctx.timer=null;}}
     }
