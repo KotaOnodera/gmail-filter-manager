@@ -271,6 +271,27 @@ var GFMSheets = (function () {
       append('Backup',values);
       if(C.stable(readMessageData(pointer))!==C.stable(value))throw new Error('既存メールデータの読み返しが一致しません');return pointer;
     }
+    // Views alone are disposable. Clearing cells preserves absolute job/backup pointers.
+    function webViewRows(p){
+      const s=sheet('Backup');
+      if(!p||!String(p.runId||'').startsWith('webview-')||!Number.isSafeInteger(p.row)||p.row<2||!Number.isSafeInteger(p.parts)||p.parts<1||p.parts>50||p.row+p.parts-1>s.getLastRow())throw dataIntegrity('表示データの保存先が不正です');
+      const rows=[];
+      for(let n=0;n<p.parts;n+=10){const r=s.getRange(p.row+n,1,Math.min(10,p.parts-n),schemas.Backup.length);if(r.getFormulas().some(row=>row.some(Boolean)))throw dataIntegrity('表示データに数式があります');rows.push(...r.getValues().map(row=>Object.fromEntries(schemas.Backup.map((k,i)=>[k,row[i]]))));}
+      if(rows.some(r=>r.SnapshotId!==p.runId||r.Kind!=='WEB_VIEW'||r.GmailFilterId!==p.id||r.Hash!==p.hash))throw dataIntegrity('表示データの保存内容が変更されています');
+      return rows;
+    }
+    function readWebView(p){try{return JSON.parse(assemble(webViewRows(p)));}catch(e){if(e.code==='GFM_DATA_INTEGRITY')throw e;throw dataIntegrity('表示データが破損しています');}}
+    function writeWebView(viewId,value){
+      const text=JSON.stringify(value);if(text.length>2000000)throw Error('表示データが保存上限（200万文字）より大きすぎます。選択範囲を絞って再取得してください');
+      const runId='webview-'+viewId,id=d.uuid(),s=sheet('Backup'),rows=chunkRows(runId,new Date().toISOString(),'WEB_VIEW',id,text);
+      let row=s.getLastRow()+1;
+      // Reuse only completely empty ranges left by our own bounded pruning.
+      const last=s.getLastRow();if(last>1){const ids=s.getRange(2,1,last-1,1).getValues();let blanks=0;for(let n=0;n<ids.length;n++){blanks=ids[n][0]===''?blanks+1:0;if(blanks>=rows.length){const start=n+3-blanks,r=s.getRange(start,1,rows.length,schemas.Backup.length);if(!r.getValues().some(v=>v.some(x=>x!==''))&&!r.getFormulas().some(v=>v.some(Boolean))){row=start;break;}}}}
+      const pointer={runId,id,row,parts:rows.length,hash:d.hash(text)};
+      for(let n=0;n<rows.length;n+=10)write(s,row+n,1,rows.slice(n,n+10));d.app.flush();
+      if(C.stable(readWebView(pointer))!==C.stable(value))throw dataIntegrity('表示データの読み返しが一致しません');return pointer;
+    }
+    function removeWebView(p){webViewRows(p);const s=sheet('Backup');for(let n=0;n<p.parts;n+=10)s.getRange(p.row+n,1,Math.min(10,p.parts-n),schemas.Backup.length).clearContent();d.app.flush();}
     function clipped(value){const s=stringify(value);return s.length<=limit?s:s.slice(0,limit-100)+' … [表示を省略。原本はBackupを参照]';}
     function writeDiff(runId,entries) {
       const s=sheet('Diff');if(s.getLastRow()>1)s.getRange(2,1,s.getLastRow()-1,schemas.Diff.length).clearContent();
@@ -280,7 +301,7 @@ var GFMSheets = (function () {
       const at=new Date(e.at||Date.now()),tokyo=new Date(at.getTime()+9*60*60*1000).toISOString().replace('T',' ').slice(0,19)+' JST';
       append('History',[[e.runId,tokyo,e.actor,e.command,e.ruleKey,e.oldId,e.newId,e.result,clipped(e.error),e.snapshotId,clipped(e.verification),e.risk]]);
     }
-    return {batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
+    return {writeWebView,readWebView,removeWebView,batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
   return {create,get schemas(){return schemasValue();}};
