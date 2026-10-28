@@ -7,10 +7,41 @@
   const commands={IMPORT:'インポート',PREVIEW:'差分確認',APPLY:'フィルター適用',VERIFY:'適用後の検証',RECOVER:'復旧',LABEL_APPLY:'ラベル反映',LABEL_RECOVER:'ラベル復旧',WEB_SAVE:'旧画面での保存',MESSAGES:'既存メールの整理'};
   let working=false,userStarted=false,mode='ALL',preview=null,labels=[],selected=new Set(),pendingApplyRunId='',pendingMessageRunId='',savedMessageJob=null,savedFilterJob=null,savedPreparation=null,filterPoll=null,preparationPoll=null,activeFilterView='';
   let viewEpoch=0,currentView=null,selectionRevision=0,confirmationSource=null;
+  let stickyCleanup=()=>{};
   let configurationNavigation=null,listNeedsRefresh=false,configurationGuards=[];
   function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined&&text!==null)el.textContent=String(text);if(cls)el.className=cls;return el;}
   function add(parent,...children){children.filter(Boolean).forEach(child=>parent.append(child));return parent;}
   function button(text,fn,style='secondary'){const b=node('button',text,'button '+style);b.type='button';b.addEventListener('click',action(fn));return b;}
+  // One real action/control tree serves both pointer and keyboard users. Stages
+  // supply only their summary; Session and confirmation guards retain ownership.
+  function stickyActions(summary,primary,approval=null){
+    stickyCleanup();
+    const bar=node('section',null,'sticky-actions'),content=node('div',null,'sticky-action-content'),count=node('p','','selection-count'),spacer=node('div',null,'sticky-action-spacer'),root=document.documentElement;
+    bar.id='next-action';bar.setAttribute('tabindex','-1');bar.setAttribute('aria-label','選択件数と次の操作');spacer.setAttribute('aria-hidden','true');
+    count.setAttribute('role','status');count.setAttribute('aria-live','polite');count.setAttribute('aria-atomic','true');
+    add(content,count,approval,primary);bar.append(content);add(main,spacer,bar);
+    const nav=document.querySelectorAll('nav')[0],viewport=window.visualViewport;
+    function measure(){
+      const inset=viewport?Math.max(0,window.innerHeight-viewport.height-viewport.offsetTop):0;
+      const navHeight=window.innerWidth<=767&&!inset&&nav?nav.getBoundingClientRect().height:0;
+      bar.style.setProperty('bottom',(inset+navHeight)+'px');
+      bar.style.setProperty('--action-viewport-height',(viewport?.height||window.innerHeight)+'px');
+      root.style.setProperty('--sticky-action-space',Math.ceil(bar.getBoundingClientRect().height+navHeight+inset)+'px');
+    }
+    const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(measure):null;
+    observer?.observe(bar);if(nav)observer?.observe(nav);
+    window.addEventListener('resize',measure);viewport?.addEventListener('resize',measure);viewport?.addEventListener('scroll',measure);
+    stickyCleanup=()=>{observer?.disconnect();window.removeEventListener('resize',measure);viewport?.removeEventListener('resize',measure);viewport?.removeEventListener('scroll',measure);root.style.removeProperty('--sticky-action-space');stickyCleanup=()=>{};};
+    const update=()=>{count.textContent=summary();measure();};update();return {update};
+  }
+  function nextActionLink(){const link=node('a','次の操作へ移動','next-action-link');link.href='#next-action';return link;}
+  function targetCount(entries,keys=null){
+    const chosen=keys?entries.filter(e=>keys.has(e.ruleKey||e.key)):entries;
+    const labelCount=chosen.filter(e=>e.kind==='LABEL').length;
+    return (keys?'選択 '+keys.size:'対象 '+chosen.length)+'件 / フィルター '+(chosen.length-labelCount)+'件 / ラベル '+labelCount+'件';
+  }
+  function confirmationAllowed(c){return c.kind==='webApproval'?!!c.p.entries?.length&&!c.p.summary?.ERROR&&!c.p.entries.some(e=>e.operation==='ERROR'||e.errors?.length):c.kind==='webMessageApproval'?c.p.remaining>0&&!c.p.entries?.some(e=>e.errors?.length):true;}
+  function gateConfirmation(c){c.apply.disabled=working||!c.valid||!confirmationAllowed(c)||!!c.check&&!c.check.checked;if(c.check)c.check.disabled=working||!c.valid||!confirmationAllowed(c);}
   function setConfigurationNavigation(nav){
     if(!nav||!/^https:\/\/docs\.google\.com\/spreadsheets\/d\/[-_a-zA-Z0-9]+\/edit$/.test(nav.spreadsheet||''))return;
     const sheets={};for(const name of ['Filters','Labels'])if(typeof nav.sheets?.[name]==='string'&&nav.sheets[name].startsWith(nav.spreadsheet+'#gid=')&&/^\d+$/.test(nav.sheets[name].slice((nav.spreadsheet+'#gid=').length)))sheets[name]=nav.sheets[name];
@@ -37,7 +68,7 @@
   function setBusy(value){
     working=value;$('busy').hidden=!value;
     if(value){main.setAttribute('aria-busy','true');disabledControls=[...document.querySelectorAll('button,input,select,textarea')].map(el=>[el,el.disabled]);disabledControls.forEach(([el])=>el.disabled=true);}
-    else{main.removeAttribute('aria-busy');disabledControls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});disabledControls=[];if(activeConfirmation){const c=activeConfirmation;c.apply.disabled=!c.valid||!!c.check&&!c.check.checked;if(c.check)c.check.disabled=!c.valid;}}
+    else{main.removeAttribute('aria-busy');disabledControls.forEach(([el,disabled])=>{if(el.isConnected)el.disabled=disabled;});disabledControls=[];configurationGuards.forEach(fn=>fn());if(activeConfirmation)gateConfirmation(activeConfirmation);}
   }
   function getStorage(){try{return window.sessionStorage;}catch(_){return undefined;}}
   const session=GFMClientSession.create({request:rawRpc,onBusy:setBusy,storage:getStorage(),isVisible:()=>!document.hidden,
@@ -63,7 +94,7 @@
     const deadline=Number.isFinite(status?.expiresAt)?new Date(status.expiresAt).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',hour12:false})+'（日本時間）':'確認できません';
     c.text.textContent='有効期限: '+deadline+' / '+(status?.message||(c.valid?'有効':'確認が必要です。内容を再確認してください。'));
     c.text.className='notice '+(c.valid?'info':'warning');
-    if(c.check)c.check.disabled=!c.valid;c.apply.disabled=!c.valid||!!c.check&&!c.check.checked;
+    gateConfirmation(c);
     clearTimeout(confirmationTimer);clearTimeout(confirmationPoll);
     if(c.valid){
       // Use server remaining duration, never compare expiry against the device's clock.
@@ -96,7 +127,7 @@
   }
   function confirmationControls(p,kind,apply,check=null){
     const text=node('p','','notice info'),c={p,kind,apply,check,text,valid:false};activeConfirmation=c;
-    if(check)check.addEventListener('change',()=>{apply.disabled=!c.valid||!check.checked;});
+    if(check)check.addEventListener('change',()=>gateConfirmation(c));
     add(main,text,button('内容を再確認',()=>reconfirmContent(c)),button('確認状態を更新',()=>refreshConfirmation(c,true),'tertiary'));
     updateConfirmation(c,p.confirmation||{valid:false,message:'有効期限を確認してください。'});
   }
@@ -174,8 +205,8 @@
     finally{if(view.refresh.isConnected&&sequence===recoveryRead)view.refresh.disabled=false;}
   }
   function navigation(page){document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
-  function shell(title,lead,page='home'){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';configurationGuards=[];main.replaceChildren(node('h1',title),node('p',lead,'lead'));add(main,configurationHelp());navigation(page);main.focus();window.scrollTo(0,0);}
-  function showHome(focus=true){forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
+  function shell(title,lead,page='home'){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';configurationGuards=[];main.replaceChildren(node('h1',title),node('p',lead,'lead'));add(main,configurationHelp());navigation(page);main.focus();window.scrollTo(0,0);}
+  function showHome(focus=true){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
     configurationGuards=[];main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));add(main,configurationHelp());navigation('home');
     const handlers={import:importCheck,all:()=>loadPreview('ALL'),selected:()=>loadPreview('SELECTED'),history:()=>history(),messages:messagesList};
     for(const b of main.querySelectorAll('[data-command]'))b.addEventListener('click',action(handlers[b.dataset.command]));
@@ -211,7 +242,7 @@
   }
   // Filtering uses the text already rendered in each card. Keep nodes and the
   // selection Set intact so typing never changes focus, details or saved scope.
-  function listPanel(entries,list,{selectable=false,keyOf=e=>e.ruleKey,eligible=e=>e.operation!=='ERROR'&&!e.errors?.length,onSelection=()=>{}}={}){
+  function listPanel(entries,list,{selectable=false,keyOf=e=>e.ruleKey,eligible=e=>e.operation!=='ERROR'&&!e.errors?.length,onSelection=()=>{},onUpdate=()=>{}}={}){
     const panel=node('div',null,'list-panel'),tools=node('div',null,'search-panel'),field=node('label',null,'list-search'),search=node('input'),errorLabel=node('label',null,'selection-label'),errors=node('input'),count=node('p','','selection-count'),empty=node('p','検索結果は0件です。「絞り込みを解除」で一覧に戻れます。','empty');
     search.type='search';search.value='';search.placeholder='送信元・件名・ラベル名など';search.setAttribute('aria-label','一覧を検索');
     errors.type='checkbox';errors.dataset.listErrors='true';
@@ -226,6 +257,7 @@
       records.forEach(r=>r.card.hidden=!shown.has(r));empty.hidden=visible.length!==0;
       count.textContent='表示 '+visible.length+'件 / 全 '+entries.length+'件 / 入力エラー '+errorCount+'件'+(selectable?' / 選択 '+selected.size+'件（全体） / 非表示の選択 '+hidden+'件':'');
       if(selectable)for(const check of list.querySelectorAll('input[data-rule-key]'))check.checked=selected.has(check.dataset.ruleKey);
+      onUpdate({hidden,visible:visible.length});
     }
     function localButton(text,fn){const b=node('button',text,'button secondary');b.type='button';b.addEventListener('click',event=>{event?.preventDefault();if(!working)fn();});return b;}
     const reset=()=>{search.value='';errors.checked=false;update();search.focus();};
@@ -236,7 +268,7 @@
       const actions=node('div',null,'actions');add(actions,localButton('表示中の選択可能な対象をすべて選択',()=>bulk(k=>selected.add(k))),localButton('表示中の選択可能な対象を解除',()=>bulk(k=>selected.delete(k))));
       add(tools,node('p','選択・解除は表示中の選択可能な対象だけに作用します。非表示の選択も次の確認へ含まれます。','muted'),actions);
     }
-    add(panel,tools,empty,list);update();return {element:panel,update};
+    add(panel,tools,nextActionLink(),empty,list);update();return {element:panel,update};
   }
   async function importCheck(){renderImportCheck(await rpc('importCheck'));}
   function renderImportCheck(check){setConfigurationNavigation(check.navigation);rememberView(check._view);shell('インポートを確認','Gmailの設定は変更せず、未登録のフィルターとラベルをスプレッドシートに追加します。');main.append(node('p','Gmail全'+check.total+'件 / 未登録'+check.count+'件。ラベル全'+(check.labelTotal||0)+'件 / 未登録'+(check.labelCount||0)+'件。既存の編集内容は維持します。','notice info'));
@@ -247,13 +279,13 @@
   function renderPreview(){rememberView(preview._view);
     const partial=mode==='SELECTED',items=candidates(preview.entries);shell(partial?'適用する変更を選択':'全部適用の内容を確認',partial?'反映するフィルター・ラベルを選んでください。選択したフィルターに必要なラベル変更も確認画面に追加します。':'フィルターとラベルを、スプレッドシートの状態に揃えます。Gmail側で変更されたラベル名も上書きします。');
     main.append(stats(preview.summary),node('p','変更なし '+preview.summary.NOOP+'件 / Gmail側のみ '+preview.summary.REMOTE_ONLY+'件（削除しません）','muted'));
-    if(!items.length){main.append(node('p','適用が必要な変更はありません。','notice info'),button('操作に戻る',()=>showHome()));return;}
+    if(!items.length){main.append(node('p','適用が必要な変更はありません。','notice info'));}
     if(preview.summary.ERROR){main.append(node('p','入力エラーが'+preview.summary.ERROR+'件あるため全部適用できません。設定スプレッドシートで修正後、差分を再取得・再確認してください。正しい対象だけ選択して確認へ進むこともできます。','notice warning'));if(!partial)main.append(button('正しい対象を選択して適用',()=>{mode='SELECTED';saveSelection();renderPreview();}));}
     const next=button(partial?'選択した内容の確認へ':'全部適用の確認へ',prepare,'');
-    const update=()=>{next.disabled=listNeedsRefresh||(partial?selected.size===0:!!preview.summary.ERROR);};
-    let panel;const changed=()=>{panel.update();update();saveSelection();};
-    panel=listPanel(items,cards(items,partial,changed),{selectable:partial,onSelection:update});configurationGuards.push(update);update();
-    const actions=node('div',null,'actions');add(actions,next,button('差分を再取得',()=>loadPreview(mode)),button('操作に戻る',()=>showHome(),'tertiary'));main.append(panel.element,actions);
+    const update=()=>{next.disabled=working||listNeedsRefresh||!items.length||(partial?selected.size===0:!!preview.summary.ERROR);};
+    let panel,sticky,hiddenCount=0;const changed=()=>{panel.update();update();saveSelection();};
+    panel=listPanel(items,cards(items,partial,changed),{selectable:partial,onSelection:update,onUpdate:({hidden})=>{hiddenCount=hidden;sticky?.update();}});configurationGuards.push(update);update();
+    const actions=node('div',null,'actions');add(actions,button('差分を再取得',()=>loadPreview(mode)),button('操作に戻る',()=>showHome(),'tertiary'));main.append(panel.element,actions);sticky=stickyActions(()=>targetCount(items,partial?selected:null)+(partial?' / 非表示 '+hiddenCount+'件':' / 入力エラー '+(preview.summary.ERROR||0)+'件'),next);
   }
 
   async function prepare(){
@@ -274,8 +306,8 @@
 
     shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。最終承認までの有効期限を確認してください。','notice info'));
     if(p.entries.some(e=>e.kind!=='LABEL'&&e.operation==='REPLACE'))main.append(node('p','更新時は、一時的に新旧のフィルターが同時に有効になります。転送などが重複する場合があります。','notice warning'));if(p.summary.TRASH||p.summary.FORWARD)main.append(node('p','ゴミ箱への移動 '+p.summary.TRASH+'件 / 転送 '+p.summary.FORWARD+'件を含みます。','notice warning'));
-    main.append(cards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','上記の変更内容を確認しました'));
-    const apply=button(p.selection?'選択した変更をGmailに適用':'全部Gmailに適用',async()=>{if(!activeConfirmation?.valid||!check.checked)throw Error('変更内容の確認にチェックしてください');pendingApplyRunId=p.runId;const result=await approvedRequest('apply',{token:p.token});if(!result)return;renderOutcome(result);await acknowledge(result.runId);},'');apply.disabled=true;add(main,label,apply,node('p','バックアップID: '+p.snapshotId,'count'),button('差分に戻る',async()=>{if(preview)renderPreview();else if(confirmationSource)await loadSavedView(confirmationSource);else retrySavedView('preview','元の差分表示が見つかりません。「取得し直す」で最新の差分を確認してください。');},'tertiary'));confirmationControls(p,'webApproval',apply,check);
+    main.append(nextActionLink(),cards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','上記の変更内容を確認しました'));
+    const apply=button(p.selection?'選択した変更をGmailに適用':'全部Gmailに適用',async()=>{if(!activeConfirmation?.valid||!confirmationAllowed(activeConfirmation)||!check.checked)throw Error('変更内容の確認にチェックしてください');pendingApplyRunId=p.runId;const result=await approvedRequest('apply',{token:p.token});if(!result)return;renderOutcome(result);await acknowledge(result.runId);},'');apply.disabled=true;add(main,node('p','バックアップID: '+p.snapshotId,'count'),button('差分に戻る',async()=>{if(preview)renderPreview();else if(confirmationSource)await loadSavedView(confirmationSource);else retrySavedView('preview','元の差分表示が見つかりません。「取得し直す」で最新の差分を確認してください。');},'tertiary'));confirmationControls(p,'webApproval',apply,check);stickyActions(()=>targetCount(p.entries),apply,label);
   }
   async function acknowledge(runId){try{await rpc('acknowledgeOutcome',{runId});}catch(_){/* The saved result remains available on reload. */}}
   function showUnknown(runId,error){pendingApplyRunId='';preview=null;shell('適用結果を確認してください','通信が途切れたため、結果が分かりません。処理は完了している可能性があります。');main.append(node('p','適用を自動再実行しません。保存済みの結果か実行ログを確認してください。','notice warning'),node('p','実行ID: '+runId,'count'));if(error?.message)main.append(node('p',error.message,'muted'));add(main,button('保存済みの結果を確認',async()=>{const r=await rpc('outcome',{runId});if(r.status==='UNKNOWN')await history(0,runId);else{renderOutcome(r);await acknowledge(runId);}},''),button('この実行のログ',()=>history(0,runId)));}
@@ -322,13 +354,13 @@
   function renderMessagesList(view){rememberView(view._view);setConfigurationNavigation(view.navigation);labels=view.labels||[];
     shell('既存メールへ適用するフィルター','受信済みのメールを整理します。フィルター設定の反映とは別の操作です。');
     main.append(node('p','ラベル付与・アーカイブ・既読化のみを実行します。検索開始時より前のメールが対象です。迷惑メール・ゴミ箱・下書き・送信済みは除外します。','notice info'));
-    if(!view.entries.length){add(main,node('p','有効なフィルターがありません。','empty'),button('操作に戻る',()=>showHome()));return;}
+    if(!view.entries.length)main.append(node('p','有効なフィルターがありません。','empty'));
     const next=button('選択したフィルターのメールを検索',()=>startMessages([...selected]),'');
-    const update=()=>{next.disabled=listNeedsRefresh||selected.size===0;};let panel;
-    panel=listPanel(view.entries,messageCards(view.entries,true,()=>{panel.update();update();saveSelection();}),{selectable:true,keyOf:e=>e.key,eligible:e=>e.eligible&&!e.errors?.length,onSelection:update});update();
-    const all=button('適用できる全件のメールを検索',()=>startMessages(null),'');const updateAll=()=>{update();all.disabled=listNeedsRefresh||view.entries.some(e=>e.errors.length)||!view.entries.some(e=>e.eligible);};configurationGuards.push(updateAll);updateAll();
+    const update=()=>{next.disabled=working||listNeedsRefresh||selected.size===0;};let panel,sticky,hiddenCount=0;
+    panel=listPanel(view.entries,messageCards(view.entries,true,()=>{panel.update();update();saveSelection();}),{selectable:true,keyOf:e=>e.key,eligible:e=>e.eligible&&!e.errors?.length,onSelection:update,onUpdate:({hidden})=>{hiddenCount=hidden;sticky?.update();}});update();
+    const all=button('適用できる全件のメールを検索',()=>startMessages(null),'');const updateAll=()=>{update();all.disabled=working||listNeedsRefresh||view.entries.some(e=>e.errors.length)||!view.entries.some(e=>e.eligible);};configurationGuards.push(updateAll);updateAll();
     if(view.entries.some(e=>e.errors.length))main.append(node('p','入力エラーがあるため全件のメール検索はできません。設定を修正して取得し直すか、正しい対象を選択してください。','notice warning'));
-    add(main,all,node('h2','選択して適用'),panel.element,next,button('対象一覧を再取得',messagesList),button('操作に戻る',()=>showHome(),'tertiary'));
+    add(main,all,node('h2','選択して適用'),panel.element,button('対象一覧を再取得',messagesList),button('操作に戻る',()=>showHome(),'tertiary'));sticky=stickyActions(()=>targetCount(view.entries,selected)+' / 非表示 '+hiddenCount+'件',next);
   }
 
   async function startMessages(keys){if(listNeedsRefresh)throw Error('設定編集後は対象一覧を再取得・再確認してください');const run=await rpc('messagesStart',{keys});await scanMessages(run);}
@@ -374,10 +406,10 @@
     shell('既存メールへの適用を確認','保存済みの対象メールへ、以下の3種類の処理だけを実行します。最終承認までの有効期限を確認してください。');
     main.append(node('p','対象 延べ'+p.total+'件 / 処理済み '+p.completed+'件 / 未処理 '+p.remaining+'件','selection-count'));
     if(p.uncertain)main.append(node('p','結果不明 '+p.uncertain+'件は、保存済みの同じメールへ再適用します。','notice warning'));
-    main.append(messageCards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','既存メールの変更内容と対象外の処理を確認しました'));
-    const apply=button('確認した既存メールを処理する',async()=>{if(!activeConfirmation?.valid||!check.checked)throw Error('既存メールの変更内容を確認してください');pendingMessageRunId=runId;const result=await approvedRequest('messagesApply',{token:p.token});if(result)renderMessageStatus(result);},'');
+    main.append(nextActionLink(),messageCards(p.entries));const label=node('label',null,'check-confirm'),check=node('input');check.type='checkbox';add(label,check,node('span','既存メールの変更内容と対象外の処理を確認しました'));
+    const apply=button('確認した既存メールを処理する',async()=>{if(!activeConfirmation?.valid||!confirmationAllowed(activeConfirmation)||!check.checked)throw Error('既存メールの変更内容を確認してください');pendingMessageRunId=runId;const result=await approvedRequest('messagesApply',{token:p.token});if(result)renderMessageStatus(result);},'');
     apply.disabled=true;
-    add(main,label,apply,node('p','大量の対象は小分けに処理します。途中で画面を閉じても、操作画面から保存済みの状況を確認できます。','muted'),button('状況に戻る',()=>loadMessageStatus(runId),'tertiary'));confirmationControls(p,'webMessageApproval',apply,check);
+    add(main,node('p','大量の対象は小分けに処理します。途中で画面を閉じても、操作画面から保存済みの状況を確認できます。','muted'),button('状況に戻る',()=>loadMessageStatus(runId),'tertiary'));confirmationControls(p,'webMessageApproval',apply,check);stickyActions(()=>'対象 延べ'+p.total+'件 / 未処理 '+p.remaining+'件',apply,label);
   }
   function showMessageUnknown(runId,error){
     pendingMessageRunId='';shell('既存メールの結果を確認してください','通信が途切れました。処理は進んでいる可能性があります。保存済みの状況を確認してください。');
