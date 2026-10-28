@@ -41,3 +41,12 @@ test('real sheet continuation guards changed association while permitting a newl
  for(let n=0;n<20&&jobs.status().status!=='PAUSED';n++)jobs.run();assert.equal(jobs.status().status,'PAUSED');sheet.values[1][id]='user-id';let p=jobs.prepareRemaining(ticket.runId);jobs.run();assert.equal(jobs.prepareStatus(p.preparationId).status,'PAUSED');assert.equal(store.readRows()[0].GmailFilterId,'user-id');
  sheet.values[1][id]='old';p=jobs.prepareRemaining(ticket.runId);for(let n=0;n<4;n++)jobs.run();const ready=jobs.prepareStatus(p.preparationId);assert.equal(ready.status,'READY');assert.equal(store.readRows()[0].Subject,'new edited definition');assert.equal(store.readRows()[0].GmailFilterId,'new-1');assert.ok(ready.entries.some(e=>e.jobCleanup));assert.equal(h.writes.length,1);
 });
+test('F3 25 patches over 1200 metadata anchors use JSON maps without service accessors',()=>{
+ const f=fakeSheets(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows(Array.from({length:1200},()=>C.importFilter(base(),labels,require('node:crypto').randomUUID())));const rows=store.readRows();f.events.length=0;
+ store.batchJobPatches(rows.slice(0,25).map(r=>({key:r.RuleKey,values:{Result:'confirmed'}})),rows,[]);
+ const count=n=>f.events.filter(e=>e===n).length;assert.equal(count('metadataGetValue'),0);assert.equal(count('metadataGetId'),0);assert.equal(count('metadataFind'),0);assert.equal(count('valuesBatchUpdate'),1);assert.equal(count('metadataSearch'),5);assert.equal(store.readRows().filter(r=>r.Result==='confirmed').length,25);
+});
+test('F3 single metadata patch also uses JSON metadata IDs and duplicate anchors fail closed',()=>{
+ const f=fakeSheets(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows([C.importFilter(base(),labels,key)]);f.events.length=0;store.updateRow(key,{Result:'confirmed'});assert.equal(f.events.filter(e=>e==='metadataGetId'||e==='metadataGetValue'||e==='metadataFind').length,0);
+ const s=f.sheets.get('Filters');s.getRange('2:2').addDeveloperMetadata('GFM',s.metadata[0].value);assert.throws(()=>store.batchJobPatches([{key,values:{Result:'bad'}}],store.readRows(),[]),/重複/);assert.equal(store.readRows()[0].Result,'confirmed');
+});

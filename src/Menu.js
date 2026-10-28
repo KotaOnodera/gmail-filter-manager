@@ -4,7 +4,8 @@ var GFMMenu = (function () {
     function apply() {
       const view=d.withLock(()=>d.controller.prepareView?d.controller.prepareView():{ticket:d.controller.prepare(),entries:[]}),ticket=view.ticket,s=ticket.summary;
       const labels=view.entries.filter(e=>e.kind==='LABEL'&&(e.operation!=='NOOP'||e.matchedId)).map(e=>'ラベル: '+(e.before?.name||'未作成')+' → '+(e.after?.name||'')+' ('+e.operation+')').join('\n');
-      const message='RunId: '+ticket.runId+'\n'+labels+'\nCREATE '+(s.CREATE||0)+' / REPLACE '+(s.REPLACE||0)+' / DELETE '+(s.DELETE||0)+'\n危険操作: TRASH '+(s.TRASH||0)+' / 転送 '+(s.FORWARD||0)+'\nGmail側のみ '+(s.REMOTE_ONLY||0)+'件（削除しません）\nバックアップ: '+ticket.snapshotId+'\n更新は非原子的で、新旧フィルターが一時的に同時に有効になります。転送等の副作用が重複する場合があります。\nこの差分を適用しますか？';
+      const cleanup=view.entries.filter(e=>e.cleanup).map(e=>'中断した置換: 旧フィルター '+e.before.id+' を削除 / 新フィルター '+e.keepId+' を維持').join('\n');
+      const message='RunId: '+ticket.runId+'\n'+labels+'\n'+cleanup+'\nCREATE '+(s.CREATE||0)+' / REPLACE '+(s.REPLACE||0)+' / DELETE '+(s.DELETE||0)+'\n危険操作: TRASH '+(s.TRASH||0)+' / 転送 '+(s.FORWARD||0)+'\nGmail側のみ '+(s.REMOTE_ONLY||0)+'件（削除しません）\nバックアップ: '+ticket.snapshotId+'\n更新は非原子的で、新旧フィルターが一時的に同時に有効になります。転送等の副作用が重複する場合があります。\nこの差分を適用しますか？';
       const approved=d.confirm('Gmailへの反映を承認',message);
       const result=d.withLock(()=>d.jobs?d.jobs.accept(ticket,approved):d.controller.apply(ticket,approved));d.show('同期結果',result.status+' / 完了 '+result.completed+'件'+(result.error?'\n'+result.error:''));return result;
     }

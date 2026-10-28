@@ -19,12 +19,7 @@ test('review: restored request does not discard boot metadata linking to a saved
  pending.find(r=>r.command==='resume').resolve({status:'ERROR',action:'messagesStart',runId:'',error:'start interrupted'});await new Promise(setImmediate);
  assert.ok(ids.main.textContent.includes('保存済みの既存メール処理を確認'),'the saved job remains reachable after failed start recovery');
 });
-function bootFixture(){
- const ids=Object.fromEntries(['main','notice','error','busy'].map(id=>[id,new Element(id==='main'?'main':'div')])),root=new Element('body');root.append(...Object.values(ids));const pending=[];
- const context=vm.createContext({document:{hidden:false,getElementById:id=>ids[id],createElement:tag=>new Element(tag),querySelectorAll:s=>root.querySelectorAll(s),addEventListener(){}},window:{GFM_LOCAL:true,sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},scrollTo(){},addEventListener(){}},setTimeout:()=>1,clearTimeout(){},fetch(url,input){const {command,input:payload}=JSON.parse(input.body);let resolve;const promise=new Promise(yes=>{resolve=yes;});pending.push({command,input:payload,resolve:data=>resolve({json:async()=>({data})})});return promise;},Date,Math});
- for(const file of ['Session','Client'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../'+file+'.html'),'utf8').replace(/^<script>\s*/,'').replace(/\s*<\/script>\s*$/,''),context);
- return {ids,pending};
-}
+function bootFixture(){return require('./client-fixture').fixture();}
 const savedJob=status=>({job:true,runId:'older-job',status,phase:'VERIFY',updatedAt:10,filters:{planned:1,completed:1,remaining:0},labels:{planned:0,completed:0,remaining:0}});
 for(const status of ['PREPARING','READY'])test('reload restores newer '+status+' preparation ahead of an older terminal job',async()=>{
  const f=bootFixture();f.pending.find(r=>r.command==='boot').resolve({filterJob:savedJob('OK'),filterPreparation:{preparationId:'new-preparation',status,updatedAt:20},unseenOutcome:null});await new Promise(setImmediate);
@@ -46,6 +41,6 @@ for(const target of ['PREPARING','READY'])test('real continuation '+target+' res
  h.tick(100);const p=web.dispatch('prepareRemaining',{runId:pv.runId});assert.equal(h.props.filterPreparation.createdAt,100);h.tick(100);deps.jobs.run();assert.equal(h.props.filterJob.updatedAt,200);
  if(target==='READY'){h.tick(100);deps.jobs.run();h.tick(100);deps.jobs.run();}
  const boot=web.dispatch('boot');assert.equal(boot.filterPreparation.status,target);assert.equal(boot.filterPreparation.previousRunId,pv.runId);assert.ok(boot.filterPreparation.createdAt<boot.filterJob.updatedAt);const before=h.writes.length,f=bootFixture();f.pending.find(r=>r.command==='boot').resolve(boot);await new Promise(setImmediate);
- const request=f.pending.find(r=>r.command==='prepareStatus');assert.ok(request,'source recovery timestamp must not hide its continuation preparation');assert.equal(request.input.preparationId,p.preparationId);request.resolve(web.dispatch('prepareStatus',request.input));await new Promise(setImmediate);
+ const request=f.pending.find(r=>r.command==='viewGet');assert.ok(request,'source recovery timestamp must not hide its owned continuation receipt');assert.equal(request.input.viewId,p._view.viewId);request.resolve(web.dispatch('viewGet',request.input));await new Promise(setImmediate);
  assert.ok(f.ids.main.textContent.includes(target==='READY'?'選択した変更を適用':'適用内容の確認を準備'));assert.equal(f.pending.filter(r=>r.command==='apply').length,0);assert.equal(h.writes.length,before);
 });

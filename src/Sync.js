@@ -30,7 +30,7 @@ var GFMSync = (function () {
       log(j.runId,'LABEL_RECOVER',{ruleKey:L.entryKey(r.LabelKey),oldId:j.oldId,newId:found.id,result:'OK',snapshotId:j.snapshotId});
       d.state.remove('labelPending');clearPreview();
     }
-    function journal(value){d.state.set('pending',value);}
+    function journal(value){if(d.bookId){value.actor=d.actor();value.bookId=d.bookId;}d.state.set('pending',value);}
     function contentHash(f){return digest(C.normalize(f));}
     function clearPreview(){d.state.remove('preview');d.state.remove('prepared');}
     function checkBackup(snapshotId,state) {
@@ -44,6 +44,7 @@ var GFMSync = (function () {
     }
     function recover() {
       const j=d.state.get('pending');if(!j)return;
+      if(j.actor!==undefined&&j.actor!==d.actor()||j.bookId!==undefined&&j.bookId!==d.bookId)throw Error('中断操作の実行者・スプレッドシートが一致しません');
       const state=d.gmail.read(),current=rows().filter(r=>r.RuleKey===j.ruleKey);
       if(current.length!==1)throw new Error('中断操作のRuleKeyが不明です。復旧手順を確認してください');
       const r=current[0];
@@ -82,11 +83,21 @@ var GFMSync = (function () {
         if(!r||r.GmailFilterId!==cleanup.newId||!fresh||contentHash(fresh)!==cleanup.afterHash||r.Status!=='有効'||contentHash(C.toFilter(r,state).filter)!==cleanup.afterHash||(old&&contentHash(old)!==cleanup.beforeHash)) {
           entries.unshift({ruleKey:cleanup.ruleKey,operation:'ERROR',before:old||null,after:null,warnings:[],risks:[],errors:['中断した置換の設定が変化しています。復旧手順を確認してください']});
         } else if(old) {
-          entries=entries.filter(e=>!(e.operation==='REMOTE_ONLY'&&e.before.id===old.id));
+          entries=entries.filter(e=>e.ruleKey!==cleanup.ruleKey&&!(e.operation==='REMOTE_ONLY'&&e.before.id===old.id));
           entries.unshift({ruleKey:cleanup.ruleKey,operation:'DELETE',before:old,after:null,matchedId:'',cleanup:true,keepId:cleanup.newId,warnings:['中断したREPLACEの旧フィルター削除。新フィルターは維持'],risks:[],errors:[]});
-        } else d.state.remove('cleanup');
+        } else if(d.state.get('filterJob')?.legacyCleanup?.sourceHash!==digest(cleanup))d.state.remove('cleanup');
       }
       return [...resolved.labelPlan.entries,...entries];
+    }
+    function legacyCleanupApproval(entries,state){
+      const source=d.state.get('cleanup');if(!source)return null;
+      if(source.actor!==undefined&&source.actor!==d.actor()||source.bookId!==undefined&&source.bookId!==d.bookId)throw Error('中断操作の実行者・スプレッドシートが一致しません');
+      const baseline=d.store.readBackup(source.snapshotId),old=baseline.filters.find(f=>f.id===source.oldId),fresh=state.filters.find(f=>f.id===source.newId);
+      const known=new Set(baseline.filters.map(f=>f.id)),matches=state.filters.filter(f=>!known.has(f.id)&&contentHash(f)===source.afterHash);
+      if(!old||contentHash(old)!==source.beforeHash||!fresh||matches.length!==1||matches[0].id!==source.newId||source.oldId===source.newId)throw Error('中断した置換の旧・新IDをバックアップと照合できません');
+      const cleanup=entries.filter(e=>e.cleanup&&e.ruleKey===source.ruleKey&&e.operation==='DELETE'&&e.before?.id===source.oldId&&e.keepId===source.newId);
+      if(cleanup.length!==1)throw Error('中断した置換の削除対象を明示的に再確認してください');
+      return {actor:d.actor(),bookId:d.bookId,source:C.clone(source)};
     }
     function snapshot() {
       const rs=rows(),lrs=labelRows(),state=d.gmail.read(),entries=build(rs,state,undefined,lrs);
@@ -147,12 +158,12 @@ var GFMSync = (function () {
       return {runId,entries:current.entries,summary:summary(current.entries),labels:resolve(current.rows,current.labelRows,current.state).planState.labels};
     }
     function capturePreparation(runId,selectedKeys) {
-      ready();
+      ready();d.store.ensureKeys(d.uuid);
       if(d.state.get('pending')||d.state.get('labelPending'))throw Error('中断操作を先に復旧してください');
       const current=runId?checkedPreview():snapshot();
       if(runId&&current.runId!==runId)throw Error('別の差分が表示されています。再確認してください');
-      const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=targets(current,keys);
-      return {runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
+      const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=keys===null?current.entries:targets(current,keys);
+      return {legacyCleanup:legacyCleanupApproval(entries,current.state),runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
     }
     function prepareView(selectedKeys) {
       d.state.remove('prepared');
@@ -164,7 +175,8 @@ var GFMSync = (function () {
       const ticket={runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(entries),preparedAt:d.now()};
       if(keys!==null){const canonical=keys.slice().sort();d.store.writeScope(snapshotId,canonical,date());const actual=d.store.readScope(snapshotId);if(C.stable(actual)!==C.stable(canonical))throw new Error('選択対象の保存に失敗しました');ticket.selection={hash:digest(canonical),count:canonical.length};}
       ticket.jobCounts={filters:entries.filter(e=>e.kind!=='LABEL'&&(!['NOOP','REMOTE_ONLY'].includes(e.operation)||e.matchedId)).length,labels:entries.filter(e=>e.kind==='LABEL'&&(e.operation!=='NOOP'||e.matchedId)).length};
-      if(d.store.writeJobData)ticket.jobApproval=d.store.writeJobData(ticket.runId,{rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,bindings:resolve(current.rows,current.labelRows,current.state).refs});
+      if(d.store.writeJobData)ticket.jobApproval=d.store.writeJobData(ticket.runId,{legacyCleanup:legacyCleanupApproval(entries,current.state),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,bindings:resolve(current.rows,current.labelRows,current.state).refs});
+      if(d.state.get('cleanup'))ticket.legacyCleanupHash=digest(d.state.get('cleanup'));
       d.state.set('prepared',ticket);return {ticket:C.clone(ticket),entries:C.clone(entries),labels:C.clone(resolve(current.rows,current.labelRows,current.state).planState.labels)};
     }
     function prepare(selectedKeys){return prepareView(selectedKeys).ticket;}

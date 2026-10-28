@@ -81,20 +81,39 @@ var GFMSheets = (function () {
       if(!d.book.getSheetByName('Labels')||!f||f.getLastColumn()!==C.columns.length)setup();
       assertHeader(sheet('Labels'),'Labels');assertHeader(sheet('Filters'),'Filters');
     }
-    function labelAnchors(){
-      const s=sheet('Labels'),raw=table('Labels'),anchors=s.createDeveloperMetadataFinder().withKey('GFM_LABEL').find();
-      raw.forEach((r,i)=>{if(!r[0]||!token(r[0]))return;const found=anchors.filter(m=>m.getValue()===token(r[0]));if(found.length>1)throw Error('LabelKeyの行メタデータが重複しています');if(!found.length)s.getRange((i+2)+':'+(i+2)).addDeveloperMetadata('GFM_LABEL',token(r[0]),d.app.DeveloperMetadataVisibility.DOCUMENT);});d.app.flush();
+    function rowAnchors(s,metadata){
+      const sheetId=s.getSheetId(),response=d.api.Spreadsheets.DeveloperMetadata.search({dataFilters:[{developerMetadataLookup:{metadataKey:metadata,metadataLocation:{sheetId},locationMatchingStrategy:'INTERSECTING_LOCATION'}}]},d.book.getId());
+      return (response.matchedDeveloperMetadata||[]).map(m=>m.developerMetadata).filter(m=>m.location?.dimensionRange?.sheetId===sheetId).map(m=>({value:m.metadataValue,id:m.metadataId,row:m.location.dimensionRange.startIndex+1}));
     }
+    function rowAnchorIds(name,metadata){
+      const ids=new Map();for(const m of rowAnchors(sheet(name),metadata)){if(ids.has(m.value))throw Error(name+'の行メタデータが重複しています');if(!Number.isSafeInteger(m.id))throw Error(name+'の行メタデータIDが不明です');ids.set(m.value,m.id);}return ids;
+    }
+    function ensureRowAnchors(name,metadata){
+      const s=sheet(name),sheetId=s.getSheetId(),raw=table(name),anchors=rowAnchors(s,metadata),counts=new Map(),requests=[];
+      for(const m of anchors)counts.set(m.value,(counts.get(m.value)||0)+1);
+      raw.forEach((r,i)=>{const value=token(r[0]);if(!value)return;const count=counts.get(value)||0;if(count>1)throw Error(name+'の行メタデータが重複しています');if(!count)requests.push({createDeveloperMetadata:{developerMetadata:{metadataKey:metadata,metadataValue:value,visibility:'DOCUMENT',location:{dimensionRange:{sheetId,dimension:'ROWS',startIndex:i+1,endIndex:i+2}}}}});});
+      // A first ALL run may initialize thousands of rows. Keep service requests
+      // bounded, with one UUID-column write and at most 500 anchors per batch.
+      for(let i=0;i<requests.length;i+=500)d.api.Spreadsheets.batchUpdate({requests:requests.slice(i,i+500)},d.book.getId());
+      d.app.flush();
+    }
+    function initializeKeys(name,metadata,uuid){
+      const raw=table(name);let changed=false;
+      for(const r of raw)if(r.some(v=>v!=='')&&!r[0]){r[0]=uuid();changed=true;}
+      if(changed){write(sheet(name),2,1,raw.map(r=>[r[0]]));d.app.flush();}
+      ensureRowAnchors(name,metadata);
+    }
+    function labelAnchors(){ensureRowAnchors('Labels','GFM_LABEL');}
     function readLabelRows(){
-      const raw=table('Labels');sheet('Labels').createDeveloperMetadataFinder().withKey('GFM_LABEL').find().forEach(m=>{const row=m.getLocation().getRow(),i=row?row.getRow()-2:-1;if(i<0||!raw[i]||token(raw[i][0])!==m.getValue())throw Error('LabelKeyと行メタデータが不一致です');});
+      const raw=table('Labels');rowAnchors(sheet('Labels'),'GFM_LABEL').forEach(m=>{const i=m.row-2;if(i<0||!raw[i]||token(raw[i][0])!==m.value)throw Error('LabelKeyと行メタデータが不一致です');});
       return raw.filter(r=>r.some(v=>v!=='')).map(r=>Object.fromEntries(schemas.Labels.map((k,i)=>[k,r[i]])));
     }
-    function ensureLabelKeys(uuid){const s=sheet('Labels');table('Labels').forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();labelAnchors();readLabelRows();}
+    function ensureLabelKeys(uuid){initializeKeys('Labels','GFM_LABEL',uuid);readLabelRows();}
     function appendLabelRows(rows){append('Labels',rows.map(r=>schemas.Labels.map(k=>r[k])));labelAnchors();const actual=readLabelRows();for(const r of rows){const found=actual.filter(a=>a.LabelKey===r.LabelKey);if(found.length!==1||schemas.Labels.some(k=>String(found[0][k])!==stringify(r[k])))throw Error('Labels書き込みの読み返しが不一致');}}
     function atomicFields(name,metadata,key,patch){
-      const cols=schemas[name],matches=sheet(name).createDeveloperMetadataFinder().withKey(metadata).withValue(token(key)).find();if(matches.length!==1)throw Error(name+'の行メタデータが不明/重複しています');
+      const cols=schemas[name],id=rowAnchorIds(name,metadata).get(token(key));if(id===undefined)throw Error(name+'の行メタデータが不明/重複しています');
       const values=Array(cols.length).fill(null);for(const k of Object.keys(patch)){if(!cols.includes(k))throw Error('不正な列');const v=stringify(patch[k]);if(v.length>limit)throw Error('セルが長すぎます');values[cols.indexOf(k)]=v;}
-      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
       if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw Error(name+'の行更新が不一致です');d.app.flush();
     }
     function updateLabelRow(key,patch){
@@ -126,9 +145,9 @@ var GFMSheets = (function () {
           if(stringify(actual[0][field])!==stringify(original[0][field])&&stringify(actual[0][field])!==stringify(value))throw Error('実行中にシートが変更されています');
           actual[0][field]=original[0][field];target[0][field]=stringify(value);values[schemas[name].indexOf(field)]=stringify(value);
         }
-        if(!anchors[name])anchors[name]=sheet(name).createDeveloperMetadataFinder().withKey(metadata).find();
-        const match=anchors[name].filter(m=>m.getValue()===token(p.key));if(match.length!==1)throw Error('行メタデータが不明または重複しています');
-        data.push({dataFilter:{developerMetadataLookup:{metadataId:match[0].getId()}},majorDimension:'ROWS',values:[values]});
+        if(!anchors[name])anchors[name]=rowAnchorIds(name,metadata);
+        const id=anchors[name].get(token(p.key));if(id===undefined)throw Error('行メタデータが不明または重複しています');
+        data.push({dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]});
       }
       const cfg=t=>C.stable({filters:C.config(t.Filters),labels:L.config(t.Labels)});
       if(cfg(before)!==cfg(expected))throw Error('実行中にシートの定義が変更されています');
@@ -177,8 +196,8 @@ var GFMSheets = (function () {
     }
     function readRows() {
       const raw=table('Filters');
-      const anchors=sheet('Filters').createDeveloperMetadataFinder().withKey('GFM').find();
-      anchors.forEach(m=>{const location=m.getLocation().getRow(),i=location?location.getRow()-2:-1;if(i<0||!raw[i]||token(raw[i][0])!==m.getValue())throw new Error('RuleKeyと行メタデータが不一致です。並替え完了後に再プレビューしてください');});
+      const anchors=rowAnchors(sheet('Filters'),'GFM');
+      anchors.forEach(m=>{const i=m.row-2;if(i<0||!raw[i]||token(raw[i][0])!==m.value)throw new Error('RuleKeyと行メタデータが不一致です。並替え完了後に再プレビューしてください');});
       return raw.filter(r=>r.some(v=>v!=='')).map(r=>Object.fromEntries(schemas.Filters.map((k,i)=>[k,['OriginalJson','OriginalRowJson'].includes(k)?decodeBlob(r[i]):r[i]])));
     }
     function token(key) {
@@ -187,18 +206,7 @@ var GFMSheets = (function () {
       for(let i=0;i<bytes.length;i+=3){const n=(bytes[i]<<16)|((bytes[i+1]||0)<<8)|(bytes[i+2]||0);result+=alphabet[(n>>>18)&63]+alphabet[(n>>>12)&63];if(i+1<bytes.length)result+=alphabet[(n>>>6)&63];if(i+2<bytes.length)result+=alphabet[n&63];}
       return result;
     }
-    function ensureAnchors() {
-      const s=sheet('Filters'),raw=table('Filters');
-      const anchors=s.createDeveloperMetadataFinder().withKey('GFM').find();
-      raw.forEach((r,i)=>{
-        if(!r[0]||!token(r[0]))return;
-        const found=anchors.filter(m=>m.getValue()===token(r[0]));
-        if(found.length>1)throw new Error('RuleKeyの行メタデータが重複しています');
-        // A1 row notation leaves columns unbounded; a full-width numeric range is still bounded.
-        if(!found.length)s.getRange((i+2)+':'+(i+2)).addDeveloperMetadata('GFM',token(r[0]),d.app.DeveloperMetadataVisibility.DOCUMENT);
-      });
-      d.app.flush();readRows();
-    }
+    function ensureAnchors(){ensureRowAnchors('Filters','GFM');readRows();}
     function appendRows(rs) {
       // Preflight editable cells before persisting any row.
       rs.forEach(r=>C.columns.filter(k=>!['OriginalJson','OriginalRowJson'].includes(k)).forEach(k=>{if(stringify(r[k]).length>limit)throw new Error(k+'が40000文字を超えています');}));
@@ -209,23 +217,20 @@ var GFMSheets = (function () {
     }
     function updateRow(key,patch) {
       const rs=readRows();if(rs.filter(r=>r.RuleKey===key).length!==1)throw new Error('RuleKeyが不明または重複しています: '+key);
-      const matches=sheet('Filters').createDeveloperMetadataFinder().withKey('GFM').withValue(token(key)).find();
-      if(matches.length!==1)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
+      const id=rowAnchorIds('Filters','GFM').get(token(key));
+      if(id===undefined)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
       const values=Array(C.columns.length).fill(null);
       Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k))throw new Error('システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('セルが長すぎます');values[C.columns.indexOf(k)]=value;});
       if(!Object.keys(patch).length)return;
       // A metadata ID follows its row when the user sorts. RAW + null skips other cells.
-      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
       if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw new Error('RuleKeyの行が更新できません。削除/並替えを確認してください');
       d.app.flush();
       const found=readRows().find(r=>r.RuleKey===key);
       if(!found||Object.keys(patch).some(k=>String(found[k])!==stringify(patch[k])))throw new Error('システム列更新の読み返しが不一致');
     }
     function readHistory(offset,limit,runId){const all=records('History').filter(r=>!runId||r.RunId===runId).reverse();return {items:all.slice(offset,offset+limit),total:all.length};}
-    function ensureKeys(uuid) {
-      const raw=table('Filters'),s=sheet('Filters');
-      raw.forEach((r,i)=>{if(r.some(v=>v!=='')&&!r[0])write(s,i+2,1,[[uuid()]]);});d.app.flush();ensureAnchors();
-    }
+    function ensureKeys(uuid){initializeKeys('Filters','GFM',uuid);readRows();}
     function decodeSnapshot(id,requireComplete) {
       const all=snapshotRecords(id);
       if(requireComplete&&all.filter(r=>r.Kind==='COMPLETE').length!==1)throw new Error('バックアップの完了マーカーがありません/不完全です');
@@ -303,8 +308,8 @@ var GFMSheets = (function () {
         const location={gid,rows:{}};result[name]=location;
         const relevant=entries.filter(e=>(e.kind==='LABEL'?'Labels':'Filters')===name),keys=relevant.map(e=>e.kind==='LABEL'?e.labelKey:e.ruleKey||e.key).filter(Boolean);
         if(!keys.length)continue;
-        const anchors=s.createDeveloperMetadataFinder().withKey(name==='Labels'?'GFM_LABEL':'GFM').find(),byToken=new Map(),requested=new Map();
-        for(const m of anchors){const value=m.getValue();if(!byToken.has(value))byToken.set(value,[]);byToken.get(value).push(m);}
+        const anchors=rowAnchors(s,name==='Labels'?'GFM_LABEL':'GFM'),byToken=new Map(),requested=new Map();
+        for(const m of anchors){const value=m.value;if(!byToken.has(value))byToken.set(value,[]);byToken.get(value).push(m);}
         for(const key of keys)requested.set(key,(requested.get(key)||0)+1);
         const n=s.getLastRow()-1;if(n<1)continue;
         const range=s.getRange(2,1,n,1),values=range.getValues(),formulas=range.getFormulas(),actualCounts=new Map();
@@ -312,7 +317,7 @@ var GFMSheets = (function () {
         for(const [key,count]of requested){
           if(count!==1||actualCounts.get(key)!==1||!token(key))continue;
           const matches=byToken.get(token(key))||[];if(matches.length!==1)continue;
-          const row=matches[0].getLocation().getRow()?.getRow();if(!Number.isSafeInteger(row)||row<2||row>n+1)continue;
+          const row=matches[0].row;if(!Number.isSafeInteger(row)||row<2||row>n+1)continue;
           if(formulas[row-2][0]||values[row-2][0]!==key)continue;
           location.rows[key]=row;
         }
