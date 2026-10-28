@@ -82,7 +82,7 @@
     return new Promise((resolve,reject)=>google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).GFM_web(command,input));
   }
   function rpc(command,input={}){return session.call(command,input);}
-  function readWithDeadline(command,input){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('状況確認がタイムアウトしました。再確認できます。')),10000);rawRpc(command,input).then(v=>{clearTimeout(timer);resolve(v);},e=>{clearTimeout(timer);reject(e);});});}
+  function readWithDeadline(command,input){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('状況確認がタイムアウトしました。再確認できます。')),30000);rawRpc(command,input).then(v=>{clearTimeout(timer);resolve(v);},e=>{clearTimeout(timer);reject(e);});});}
   function rememberView(view){if(view){currentView=view;session.remember(view);}}
   let activeConfirmation=null,confirmationTimer=null,confirmationPoll=null,confirmationRead=0;
   function forgetConfirmation(){clearTimeout(confirmationTimer);clearTimeout(confirmationPoll);activeConfirmation=null;confirmationRead++;}
@@ -137,7 +137,7 @@
   }
   function retrySavedView(action,error,view=null){
     shell('保存した画面を再確認','保存期限・設定変更・通信状態を確認してください。');main.append(node('p',error||'保存した表示が見つからないか、確認が失効しています。','notice warning'));
-    const retry=action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):action==='messagesStatus'&&view?()=>loadSavedView(view):()=>loadPreview(mode);
+    const retry=view?()=>loadSavedView(view):action==='importCheck'?importCheck:action==='messagesList'?messagesList:action==='messagesPrepare'&&savedMessageJob?()=>prepareMessages(savedMessageJob.runId):()=>loadPreview(mode);
     add(main,button('取得し直す',retry,''),button('操作に戻る',()=>showHome(),'tertiary'));
   }
   function reconfirmationNotices(changes){
