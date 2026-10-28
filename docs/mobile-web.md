@@ -159,3 +159,6 @@ GFM_PREVIEW_CHANGES=1 GFM_PREVIEW_LABELS=1 GFM_PREVIEW_RISKS=1 GFM_PREVIEW_BLANK
 ```
 
 `GFM_PREVIEW_ERRORS=1` はFiltersとLabels両方の入力エラー、環境変数なしは変更なし、`GFM_PREVIEW_ROWS=120` は長い一覧を用意します。`GFM_PREVIEW_JOB_INTERVAL_MS=3000` で準備段階を見やすくできます。`GFM_PREVIEW_DROP_READS=prepareStart` を加えると最初のALL準備の元応答だけを保留します。復帰・再読み込み・確認状態の更新後も `/test-stats` の `requestCounts.prepareStart` と `backupCount` が各1、`filterWrites` が0であることを確認してください。明示チェック・適用後だけ `filterWrites` が増えます。既存の `/test-control` の `advanceMs` で期限切れ、`subject` で設定変更を合成でき、再確認でREADから新しい1つの確認へ進むことを検証できます。
+
+
+新しいタブやブラウザ再起動でsessionStorageの表示IDがない場合も、bootが準備IDに対応する所有者・スプレッドシートの表示IDを返し、保存した画面を検証してから復帰します。SELECTEDでは直接選択したキー、依存ラベル、元の差分への戻り先を分けて保持し、期限切れ後の再確認や狭めた継続範囲を全部適用へ広げません。保存した表示が欠落・破損・期限切れの場合は、適用の代わりにSELECTEDで対象を明示的に選び直します。保存済み状況を取得できない場合の「取得し直す」も、選択0件のSELECTEDから再開します。

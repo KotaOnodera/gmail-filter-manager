@@ -77,12 +77,36 @@ var GFMWeb = (function () {
       const data={previousRunId:input.previousRunId||result.previousRunId||'',originalEntries,viewId,action,runId:h.runId,sourceView,preparationId:h.preparationId,actor:h.actor,bookId:h.bookId,mode:input._viewMode==='SELECTED'||input.keys!==undefined?'SELECTED':'ALL',keys:input.keys||[],revision:0,result,config:configHash()};
       h.pointer=d.store.writeWebView(viewId,data);d.state.set('webView:'+viewId,h);ids.push(viewId);d.state.set('webViewIndex',ids);return {...result,_view:locator(h)};
     }
+    function preparationLocator(preparationId){
+      const ids=d.state.get('webViewIndex')||[];
+      for(const id of ids.slice().reverse()){const h=d.state.get('webView:'+id);if(owned(h)&&h.preparationId===preparationId&&h.quarantinedAt===undefined&&now()-h.at<=viewTTL&&['prepareStart','prepareRemaining'].includes(h.action))return locator(h);}
+      return null;
+    }
+    function preparationContext(result){
+      // A new tab has no browser locator. Recover only a verified owner/book
+      // receipt for this preparation; its direct keys and source preview are
+      // separate from the dependency-expanded approval ticket.
+      const ids=d.state.get('webViewIndex')||[];
+      for(const id of ids.slice().reverse()){
+        const h=d.state.get('webView:'+id);
+        if(!owned(h)||h.preparationId!==result.preparationId||h.quarantinedAt!==undefined||now()-h.at>viewTTL||!['prepareStart','prepareRemaining'].includes(h.action))continue;
+        try{
+          const v=d.store.readWebView(h.pointer);
+          if(!owned(v)||v.viewId!==h.viewId||v.action!==h.action||v.runId!==h.runId||v.preparationId!==h.preparationId||!['ALL','SELECTED'].includes(v.mode)||!Array.isArray(v.keys))continue;
+          if((v.previousRunId||v.result.previousRunId||(h.action==='prepareRemaining'?h.runId:''))!==(result.previousRunId||''))continue;
+          if(result.selection&&h.action!=='prepareRemaining'&&v.mode!=='SELECTED')continue;
+          if(result.entries&&v.keys.some(k=>!result.entries.some(e=>e.ruleKey===k)))continue;
+          return {...result,_view:locator(h),mode:result.selection?'SELECTED':v.mode,keys:v.keys,sourceView:v.sourceView||null};
+        }catch(_){/* Missing or corrupt disposable receipt never broadens scope. */}
+      }
+      return {...result,mode:'SELECTED',keys:[],scopeUnavailable:true,token:'',...(result.status==='READY'?{confirmation:validity(null,'SUPERSEDED')}:{})};
+    }
     function readyPreparation(preparationId){
-      const progress=d.jobs.prepareStatus(preparationId);if(progress.status!=='READY')return withNavigation(progress);
+      const progress=d.jobs.prepareStatus(preparationId);if(progress.status!=='READY')return withNavigation(preparationContext(progress));
       // PREPARING checkpoints remain readable during a running worker. Once
       // READY, re-read and fence validation plus token issuance against preview,
       // replacement preparation and apply using the shared operation lock.
-      return withNavigation(d.withLock(()=>{
+      return withNavigation(preparationContext(d.withLock(()=>{
         const p=d.jobs.prepareStatus(preparationId);if(p.status!=='READY')return p;
         if(!same(p.ticket,d.state.get('prepared')))throw Error('確認が失効しました。差分を再取得してください');
         const captured=d.store.readJobData(p.ticket.jobApproval);
@@ -93,7 +117,7 @@ var GFMWeb = (function () {
         if(old&&old.ticket.runId===p.ticket.runId)return {...p,...p.ticket,token:old.token,confirmation:confirmationStatus('webApproval',old.token)};
         if(now()>=p.ticket.preparedAt+approvalTTL)return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'EXPIRED')};
         return {...p,...p.ticket,...confirmation('webApproval',p.ticket,remote)};
-      }));
+      })));
     }
     function loadView(input){
       const h=typeof input.viewId==='string'&&input.viewId.length<=128?d.state.get('webView:'+input.viewId):null;
@@ -119,7 +143,7 @@ var GFMWeb = (function () {
         return {status:'OK',...locator(h),sourceView:v.sourceView||null,mode:v.mode,keys:v.keys,revision:v.revision,result:{...result,_view:locator(h)}};
       }catch(e){
         const reason=e.confirmation?.reason||(/設定/.test(e.message)?'CONFIG_CHANGED':/Gmail|ラベル/.test(e.message)?'GMAIL_CHANGED':/期限/.test(e.message)?'EXPIRED':'SUPERSEDED');
-        if(h.preparationId&&(!result?.entries)){try{const p=d.jobs.prepareStatus(h.preparationId);if(p.status==='READY')result={...p,...p.ticket};}catch(_){}}
+        if(h.preparationId&&(!result?.entries)){try{const p=d.jobs.prepareStatus(h.preparationId);if(p.status==='READY')result=preparationContext({...p,...p.ticket});}catch(_){}}
         const confirmation=e.confirmation||{...validity(null,reason),expiresAt:result?.confirmation?.expiresAt||((result?.preparedAt!==undefined)?result.preparedAt+approvalTTL:null)};
         return {status:'INVALID',...locator(h),mode:v?.mode,keys:v?.keys||[],sourceView:v?.sourceView||null,confirmation,result:result?{...result,confirmation,_view:locator(h)}:null,error:'保存した画面を使用できません。再確認または取得し直してください。 '+String(e.message||e).slice(0,200)};}
     }
@@ -214,7 +238,7 @@ var GFMWeb = (function () {
       if(action==='confirmationStatus')return d.withLock(()=>confirmationStatus(input.kind,input.token));
       if(action==='reconfirm')return d.withLock(()=>tracked(action,input,()=>reconfirm(input)));
       if(action==='viewUpdate')return d.withLock(()=>updateView(input));
-      if(action==='boot'){const last=d.state.get('webOutcome');return {navigation:(()=>{const n=navigation();return n?{spreadsheet:n.spreadsheet,sheets:n.sheets}:null;})(),filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return p?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
+      if(action==='boot'){const last=d.state.get('webOutcome');return {navigation:(()=>{const n=navigation();return n?{spreadsheet:n.spreadsheet,sheets:n.sheets}:null;})(),filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return owned(p)?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt,_view:preparationLocator(p.preparationId)}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
       if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
       if(action==='prepareStatus'&&d.jobs)return readyPreparation(input.preparationId);
       return d.withLock(()=>tracked(action,input,()=>{

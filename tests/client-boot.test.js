@@ -41,6 +41,6 @@ for(const target of ['PREPARING','READY'])test('real continuation '+target+' res
  h.tick(100);const p=web.dispatch('prepareRemaining',{runId:pv.runId});assert.equal(h.props.filterPreparation.createdAt,100);h.tick(100);deps.jobs.run();assert.equal(h.props.filterJob.updatedAt,200);
  if(target==='READY'){h.tick(100);deps.jobs.run();h.tick(100);deps.jobs.run();}
  const boot=web.dispatch('boot');assert.equal(boot.filterPreparation.status,target);assert.equal(boot.filterPreparation.previousRunId,pv.runId);assert.ok(boot.filterPreparation.createdAt<boot.filterJob.updatedAt);const before=h.writes.length,f=bootFixture();f.pending.find(r=>r.command==='boot').resolve(boot);await new Promise(setImmediate);
- const request=f.pending.find(r=>r.command==='prepareStatus');assert.ok(request,'source recovery timestamp must not hide its continuation preparation');assert.equal(request.input.preparationId,p.preparationId);request.resolve(web.dispatch('prepareStatus',request.input));await new Promise(setImmediate);
+ const request=f.pending.find(r=>r.command==='viewGet');assert.ok(request,'source recovery timestamp must not hide its owned continuation receipt');assert.equal(request.input.viewId,p._view.viewId);request.resolve(web.dispatch('viewGet',request.input));await new Promise(setImmediate);
  assert.ok(f.ids.main.textContent.includes(target==='READY'?'選択した変更を適用':'適用内容の確認を準備'));assert.equal(f.pending.filter(r=>r.command==='apply').length,0);assert.equal(h.writes.length,before);
 });

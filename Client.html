@@ -119,7 +119,7 @@
   }
   async function reconfirmContent(c){
     const view=c.p._view||currentView;
-    if(!view){if(c.kind==='webImport')return importCheck();if(c.kind==='webMessageApproval')return prepareMessages(c.p.runId);return loadPreview(mode);}
+    if(!view){if(c.kind==='webImport')return importCheck();if(c.kind==='webMessageApproval')return prepareMessages(c.p.runId);return loadPreview(c.p.selection?'SELECTED':mode);}
     const fresh=await rpc('reconfirm',view);
     if(fresh.status==='MESSAGE_JOB'){renderMessageStatus(fresh.result);return;}
     renderSavedView(fresh);
@@ -146,8 +146,9 @@
   function renderSavedView(saved){
     if(saved.status==='JOB'){session.forgetView();currentView=null;renderFilterJob(saved.result);return;}
     if(saved.status!=='OK'&&!(saved.status==='INVALID'&&saved.result?.confirmation&&(['importCheck','messagesPrepare','prepare'].includes(saved.action)||saved.result.status==='READY'))){
+      if(['prepare','prepareStart','prepareRemaining'].includes(saved.action))mode=saved.mode==='ALL'?'ALL':'SELECTED';
       retrySavedView(saved.action,saved.error);
-      if(saved.status==='INVALID'&&saved.viewId){const c={p:{_view:saved},kind:'webApproval'};main.append(button('内容を再確認',()=>reconfirmContent(c)));}return;}
+      if(saved.status==='INVALID'&&saved.viewId&&saved.result){const c={p:{_view:saved},kind:'webApproval'};main.append(button('内容を再確認',()=>reconfirmContent(c)));}return;}
     if(['prepare','prepareStart','prepareRemaining'].includes(saved.action))confirmationSource=saved.sourceView||null;
     setConfigurationNavigation(saved.result?.navigation);listNeedsRefresh=false;mode=saved.mode||'ALL';selected=new Set(saved.keys||[]);selectionRevision=saved.revision||0;rememberView(saved.result?._view||saved);const r=saved.result;
     if(saved.action==='preview'){preview=r;labels=r.labels||[];renderPreview();}
@@ -298,6 +299,13 @@
   }
   function renderPreparation(result){
     setConfigurationNavigation(result.navigation);savedPreparation=result;rememberView(result._view);
+    if(result.mode)mode=result.mode;else if(result.selection)mode='SELECTED';
+    if(Array.isArray(result.keys))selected=new Set(result.keys);
+    if(result.sourceView!==undefined)confirmationSource=result.sourceView;
+    if(result.status==='READY'&&result.scopeUnavailable){
+      mode='SELECTED';shell('適用する対象を選び直してください','保存した選択範囲を確認できません。対象を明示的に選び直して、依存ラベルと変更内容を再確認してください。');
+      add(main,button('対象を選び直す',()=>loadPreview('SELECTED')),button('操作に戻る',()=>showHome(),'tertiary'));return;
+    }
     if(result.status==='READY'){renderConfirmation(result);return;}
     if(['BLOCKED','NOOP'].includes(result.status)){
       shell(result.status==='BLOCKED'?'入力エラーを修正してください':'変更はありません',result.status==='BLOCKED'?'入力エラーがあるため全部適用できません。Filters / Labelsの修正先で設定を直し、取得し直してください。':'適用が必要な変更はありません。Gmail側のみのフィルターは削除しません。');
@@ -312,7 +320,7 @@
     add(main,text,button('保存済みの確認状況を更新',()=>loadPreparation(result.preparationId)),button('操作に戻る',()=>showHome(),'tertiary'));
     if(result.status==='PREPARING'){const epoch=viewEpoch;preparationPoll=setTimeout(()=>{if(!document.hidden&&epoch===viewEpoch)readWithDeadline('prepareStatus',{preparationId:result.preparationId}).then(r=>{if(epoch===viewEpoch)renderPreparation(r);}).catch(()=>{text.textContent='状況を取得できませんでした。保存済みの確認状況を更新できます。';});},5000);}
   }
-  async function loadPreparation(preparationId){const epoch=viewEpoch;try{const r=await readWithDeadline('prepareStatus',{preparationId});if(epoch===viewEpoch)renderPreparation(r);}catch(e){if(epoch===viewEpoch)retrySavedView('prepareStart',e.message);}}
+  async function loadPreparation(preparationId){const epoch=viewEpoch;try{const r=await readWithDeadline('prepareStatus',{preparationId});if(epoch===viewEpoch)renderPreparation(r);}catch(e){if(epoch===viewEpoch){mode='SELECTED';retrySavedView('prepareStart',e.message);}}}
   function renderConfirmation(p){setConfigurationNavigation(p.navigation);rememberView(p._view);labels=p.labels||labels;
 
     shell(p.selection?'選択した変更を適用':'全部適用を確認',p.selection?'依存するラベルを含め、以下の'+p.selection.count+'件を適用します。':'以下の変更をまとめてGmailに適用します。');main.append(stats(p.summary),node('p','バックアップを保存・検証しました。最終承認までの有効期限を確認してください。','notice info'));
@@ -443,6 +451,6 @@
   // Operations are visible before any service call. Bootstrap reads only saved outcome state.
   showHome(false);
   const restoredRequest=session.restore();
-  rpc('boot').then(async result=>{setConfigurationNavigation(result.navigation);if(result.navigation&&!userStarted&&!restoredRequest&&!session.viewLocator())showHome(false);if(result.filterJob)savedFilterJob=result.filterJob;if(result.filterPreparation)savedPreparation=result.filterPreparation;if(!savedMessageJob&&result.messageJob)savedMessageJob=result.messageJob;if(restoredRequest||interruptedRequest)return;if(savedFilterJob&&['ACCEPTED','RUNNING','WAITING'].includes(savedFilterJob.status)&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedFilterJob&&session.viewLocator()?.action!=='prepareRemaining'&&session.viewLocator()?.runId===savedFilterJob.runId&&!userStarted){session.forgetView();currentView=null;renderFilterJob(savedFilterJob);return;}if(session.viewLocator()&&!userStarted){await loadSavedView(session.viewLocator());return;}if(savedPreparation&&['PREPARING','READY','BLOCKED','NOOP','PAUSED'].includes(savedPreparation.status)&&!preparationBelongsToJob(savedPreparation,savedFilterJob)&&preparationFollowsJob(savedPreparation,savedFilterJob)&&!userStarted){await loadPreparation(savedPreparation.preparationId);return;}if(savedFilterJob&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
+  rpc('boot').then(async result=>{setConfigurationNavigation(result.navigation);if(result.navigation&&!userStarted&&!restoredRequest&&!session.viewLocator())showHome(false);if(result.filterJob)savedFilterJob=result.filterJob;if(result.filterPreparation)savedPreparation=result.filterPreparation;if(!savedMessageJob&&result.messageJob)savedMessageJob=result.messageJob;if(restoredRequest||interruptedRequest)return;if(savedFilterJob&&['ACCEPTED','RUNNING','WAITING'].includes(savedFilterJob.status)&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedFilterJob&&session.viewLocator()?.action!=='prepareRemaining'&&session.viewLocator()?.runId===savedFilterJob.runId&&!userStarted){session.forgetView();currentView=null;renderFilterJob(savedFilterJob);return;}if(session.viewLocator()&&!userStarted){await loadSavedView(session.viewLocator());return;}if(savedPreparation&&['PREPARING','READY','BLOCKED','NOOP','PAUSED'].includes(savedPreparation.status)&&!preparationBelongsToJob(savedPreparation,savedFilterJob)&&preparationFollowsJob(savedPreparation,savedFilterJob)&&!userStarted){if(savedPreparation._view)await loadSavedView(savedPreparation._view);else await loadPreparation(savedPreparation.preparationId);return;}if(savedFilterJob&&!userStarted){renderFilterJob(savedFilterJob);return;}if(savedMessageJob&&!userStarted)showHome(false);if(!result.unseenOutcome)return;if(!userStarted){renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}else{const notice=$('notice');notice.replaceChildren(node('p','前回の適用結果が残っています。'),button('前回の結果を確認',async()=>{renderOutcome(result.unseenOutcome);if(result.unseenOutcome.status!=='UNKNOWN')await acknowledge(result.unseenOutcome.runId);}));notice.hidden=false;}}).catch(()=>{if(!userStarted)message('接続状況を確認できませんでした。操作時に再確認します。','warning');});
 })();
 </script>
