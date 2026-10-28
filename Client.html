@@ -5,7 +5,7 @@
   const homeContent=[...main.childNodes].map(n=>n.cloneNode(true));
   const operations={CREATE:'追加',REPLACE:'更新',DELETE:'削除',NOOP:'変更なし',ERROR:'入力エラー',REMOTE_ONLY:'Gmail側のみ'};
   const commands={IMPORT:'インポート',PREVIEW:'差分確認',APPLY:'フィルター適用',VERIFY:'適用後の検証',RECOVER:'復旧',LABEL_APPLY:'ラベル反映',LABEL_RECOVER:'ラベル復旧',WEB_SAVE:'旧画面での保存',MESSAGES:'既存メールの整理'};
-  let working=false,userStarted=false,mode='ALL',preview=null,labels=[],selected=new Set(),pendingApplyRunId='',pendingMessageRunId='',savedMessageJob=null,savedFilterJob=null,savedPreparation=null,filterPoll=null,preparationPoll=null,activeFilterView='';
+  let working=false,userStarted=false,mode='ALL',preview=null,labels=[],selected=new Set(),pendingApplyRunId='',pendingMessageRunId='',savedMessageJob=null,savedFilterJob=null,savedPreparation=null,filterPoll=null,preparationPoll=null,activePreparationView='',activeFilterView='';
   let viewEpoch=0,currentView=null,selectionRevision=0,confirmationSource=null;
   let stickyCleanup=()=>{};
   let configurationNavigation=null,listNeedsRefresh=false,configurationGuards=[];
@@ -209,8 +209,8 @@
     finally{if(view.refresh.isConnected&&sequence===recoveryRead)view.refresh.disabled=false;}
   }
   function navigation(page){document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});}
-  function shell(title,lead,page='home'){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';configurationGuards=[];main.replaceChildren(node('h1',title),node('p',lead,'lead'));add(main,configurationHelp());navigation(page);main.focus();window.scrollTo(0,0);}
-  function showHome(focus=true){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';
+  function shell(title,lead,page='home'){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';activePreparationView='';configurationGuards=[];main.replaceChildren(node('h1',title),node('p',lead,'lead'));add(main,configurationHelp());navigation(page);main.focus();window.scrollTo(0,0);}
+  function showHome(focus=true){stickyCleanup();forgetConfirmation();clearTimeout(filterPoll);clearTimeout(preparationPoll);activeFilterView='';activePreparationView='';
     configurationGuards=[];main.replaceChildren(...homeContent.map(n=>n.cloneNode(true)));add(main,configurationHelp());navigation('home');
     const handlers={import:importCheck,all:()=>loadPreview('ALL'),selected:()=>loadPreview('SELECTED'),history:()=>history(),messages:messagesList};
     for(const b of main.querySelectorAll('[data-command]'))b.addEventListener('click',action(handlers[b.dataset.command]));
@@ -315,11 +315,13 @@
       add(main,button('差分を再取得',()=>loadPreview('ALL')),button('操作に戻る',()=>showHome(),'tertiary'));const apply=button('全部Gmailに適用',()=>{});apply.disabled=true;stickyActions(()=>targetCount(items)+' / 入力エラー '+(result.summary.ERROR||0)+'件',apply);return;
     }
     shell('適用内容の確認を準備','差分の検証とバックアップを段階ごとに保存しています。画面を閉じても準備は続きます。');
+    activePreparationView=result.preparationId;
     const text=node('p',result.status==='PAUSED'?result.error||'確認準備を中断しました。差分を再取得してください。':'確認準備中 / '+({READ:'差分を取得・検証',BACKUP:'バックアップを保存',VERIFY_BACKUP:'バックアップを読み返し検証'}[result.phase]||result.phase||'受付済み'),'notice '+(result.status==='PAUSED'?'warning':'info'));
     if(result.status==='PAUSED')main.append(button('差分を取得し直す',()=>loadPreview(mode)));
     add(main,text,button('保存済みの確認状況を更新',()=>loadPreparation(result.preparationId)),button('操作に戻る',()=>showHome(),'tertiary'));
-    if(result.status==='PREPARING'){const epoch=viewEpoch;preparationPoll=setTimeout(()=>{if(!document.hidden&&epoch===viewEpoch)readWithDeadline('prepareStatus',{preparationId:result.preparationId}).then(r=>{if(epoch===viewEpoch)renderPreparation(r);}).catch(()=>{text.textContent='状況を取得できませんでした。保存済みの確認状況を更新できます。';});},5000);}
+    if(result.status==='PREPARING')preparationPoll=setTimeout(()=>{if(!document.hidden)refreshPreparation().catch(()=>{text.textContent='状況を取得できませんでした。保存済みの確認状況を更新できます。';});},5000);
   }
+  async function refreshPreparation(){const id=activePreparationView,epoch=viewEpoch;if(!id)return;const r=await readWithDeadline('prepareStatus',{preparationId:id});if(epoch===viewEpoch&&activePreparationView===id)renderPreparation(r);}
   async function loadPreparation(preparationId){const epoch=viewEpoch;try{const r=await readWithDeadline('prepareStatus',{preparationId});if(epoch===viewEpoch)renderPreparation(r);}catch(e){if(epoch===viewEpoch){mode='SELECTED';retrySavedView('prepareStart',e.message);}}}
   function renderConfirmation(p){setConfigurationNavigation(p.navigation);rememberView(p._view);labels=p.labels||labels;
 
@@ -333,7 +335,8 @@
   async function acknowledge(runId){try{await rpc('acknowledgeOutcome',{runId});}catch(_){/* The saved result remains available on reload. */}}
   function showUnknown(runId,error){pendingApplyRunId='';preview=null;shell('適用結果を確認してください','通信が途切れたため、結果が分かりません。処理は完了している可能性があります。');main.append(node('p','適用を自動再実行しません。保存済みの結果か実行ログを確認してください。','notice warning'),node('p','実行ID: '+runId,'count'));if(error?.message)main.append(node('p',error.message,'muted'));add(main,button('保存済みの結果を確認',async()=>{const r=await rpc('outcome',{runId});if(r.status==='UNKNOWN')await history(0,runId);else{renderOutcome(r);await acknowledge(runId);}},''),button('この実行のログ',()=>history(0,runId)));}
   function renderOutcome(result){if(result.job){renderFilterJob(result);return;}pendingApplyRunId='';preview=null;if(result.status==='UNKNOWN'){showUnknown(result.runId);return;}shell('適用結果','Gmailへの適用結果です。');const ok=result.status==='OK';main.append(node('p',(ok?'適用が完了しました。':result.status==='PARTIAL'?'一部が完了しました。差分を再確認してください。':'確認または復旧が必要です。')+' 処理済み（変更なしを含む）'+result.completed+'件。','notice '+(ok?'':'warning')));if(ok&&result.remaining)main.append(node('p','選択外の差分が'+result.remaining+'件残っています。','notice info'));if(result.error)main.append(node('p',result.error,'notice error'));add(main,node('p','実行ID: '+result.runId,'count'),button('この実行のログ',()=>history(0,result.runId)),button('操作に戻る',()=>showHome()));}
-  async function loadFilterJob(runId){renderFilterJob(await rpc('filterJobStatus',{runId}));}
+  async function refreshFilterJob(){const runId=activeFilterView,epoch=viewEpoch;if(!runId)return;const r=await readWithDeadline('filterJobStatus',{runId});if(epoch===viewEpoch&&activeFilterView===runId)renderFilterJob(r);}
+  async function loadFilterJob(runId){if(activeFilterView===runId)return refreshFilterJob();const epoch=viewEpoch;const r=await rpc('filterJobStatus',{runId});if(epoch===viewEpoch)renderFilterJob(r);}
   function preparationBelongsToJob(p,j){return !!(p&&j&&(p.preparationId===j.preparationId||p.runId&&p.runId===j.runId));}
   function preparationFollowsJob(p,j){return !j||p.previousRunId===j.runId||Math.max(p.createdAt??0,p.updatedAt??0)>=(j.updatedAt??0);}
   function renderFilterJob(result){
@@ -350,7 +353,7 @@
     const actions=node('div',null,'actions');add(actions,button('保存済みの進捗を更新',()=>loadFilterJob(result.runId)),button('この実行のログ',()=>history(0,result.runId)));
     if(result.status==='PAUSED')actions.append(button('残りの差分を確認して続ける',async()=>{const p=await rpc('prepareRemaining',{runId:result.runId});if(p.job)renderFilterJob(p);else renderPreparation(p);},''));
     add(main,actions,node('p','実行ID: '+result.runId,'count'),button('操作に戻る',()=>showHome(),'tertiary'));
-    if(['ACCEPTED','RUNNING','WAITING'].includes(result.status))filterPoll=setTimeout(()=>{if(!document.hidden&&activeFilterView===result.runId)rawRpc('filterJobStatus',{runId:result.runId}).then(r=>{if(activeFilterView===result.runId)renderFilterJob(r);}).catch(()=>{text.textContent='保存済みの進捗を取得できませんでした。「進捗を更新」で再確認できます。';});},5000);
+    if(['ACCEPTED','RUNNING','WAITING'].includes(result.status))filterPoll=setTimeout(()=>{if(!document.hidden)refreshFilterJob().catch(()=>{text.textContent='保存済みの進捗を取得できませんでした。「進捗を更新」で再確認できます。';});},5000);
   }
   function messageActionText(action){
     const parts=[];for(const id of action.addLabelIds||[])parts.push('ラベル「'+(labels.find(l=>l.id===id)?.name||id)+'」を追加');
@@ -446,8 +449,8 @@
     if(result.total>20){const pager=node('div',null,'pagination');if(start>0)pager.append(button('前の20件',()=>history(start-20,runId)));pager.append(node('p',(start+1)+'〜'+Math.min(start+20,result.total)+' / '+result.total+'件','count'));if(start+20<result.total)pager.append(button('次の20件',()=>history(start+20,runId)));main.append(pager);}if(runId)await acknowledge(runId);
   }
   for(const b of document.querySelectorAll('[data-page]'))b.addEventListener('click',action(()=>b.dataset.page==='home'?showHome():history()));
-  document.addEventListener('visibilitychange',()=>{if(document.hidden){confirmationRead++;if(activeConfirmation)freezeConfirmation(activeConfirmation);}else{session.resume();refreshConfirmation();if(activeFilterView)rawRpc('filterJobStatus',{runId:activeFilterView}).then(renderFilterJob).catch(()=>{});}});
-  window.addEventListener('pageshow',event=>{if(event.persisted){session.resume();refreshConfirmation();}});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){confirmationRead++;if(activeConfirmation)freezeConfirmation(activeConfirmation);}else{session.resume();refreshConfirmation();refreshPreparation().catch(()=>{});refreshFilterJob().catch(()=>{});}});
+  window.addEventListener('pageshow',event=>{if(event.persisted){session.resume();refreshConfirmation();refreshPreparation().catch(()=>{});refreshFilterJob().catch(()=>{});}});
   // Operations are visible before any service call. Bootstrap reads only saved outcome state.
   showHome(false);
   const restoredRequest=session.restore();

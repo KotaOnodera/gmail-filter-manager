@@ -7,11 +7,13 @@ function fixture(){
  const h=harness({rows:[]}),f=fakeSheets();h.data.labels=labels;h.data.filters=filters;h.data.forwarding=[];
  const store=S.create({...f,hash,uuid:()=>crypto.randomUUID()});store.setup();store.appendRows(filters.map(v=>C.importFilter(v,labels,crypto.randomUUID())));
  store.appendLabelRows([...Array.from({length:30},(_,i)=>({LabelKey:crypto.randomUUID(),Name:'new-'+i})),...labels.map(l=>({LabelKey:crypto.randomUUID(),Name:'changed-'+l.name,GmailLabelId:l.id,SyncedName:l.name}))]);
- const counts={getValues:0,getFormulas:0,metadataFind:0,batchWrites:0,flush:0,gmailReads:0,gmailWrites:0,checkpointWrites:0},reset=()=>Object.keys(counts).forEach(k=>counts[k]=0),count=name=>{counts[name]++;h.tick(25);};
+ const counts={getValues:0,getFormulas:0,richTextWrites:0,metadataFind:0,metadataGetValue:0,metadataGetId:0,metadataSearch:0,metadataBatchUpdate:0,batchWrites:0,flush:0,gmailReads:0,gmailWrites:0,checkpointWrites:0},reset=()=>Object.keys(counts).forEach(k=>counts[k]=0),count=name=>{counts[name]++;h.tick(25);};
  for(const sheet of f.sheets.values()){
-  const range=sheet.getRange.bind(sheet);sheet.getRange=(...args)=>{const r=range(...args);for(const method of ['getValues','getFormulas']){const fn=r[method].bind(r);r[method]=(...a)=>{count(method);return fn(...a);};}return r;};
+  const range=sheet.getRange.bind(sheet);sheet.getRange=(...args)=>{const r=range(...args);for(const method of ['getValues','getFormulas','setRichTextValues']){const fn=r[method].bind(r);r[method]=(...a)=>{count(method==='setRichTextValues'?'richTextWrites':method);return fn(...a);};}return r;};
   const finder=sheet.createDeveloperMetadataFinder.bind(sheet);sheet.createDeveloperMetadataFinder=(...args)=>{const v=finder(...args),find=v.find.bind(v);v.find=(...a)=>{count('metadataFind');return find(...a);};return v;};
  }
+ for(const sheet of f.sheets.values())for(const m of sheet.metadata)for(const [method,counter]of [['getValue','metadataGetValue'],['getId','metadataGetId']]){const fn=m[method].bind(m);m[method]=(...a)=>{count(counter);return fn(...a);};}
+ for(const [target,method,counter]of [[f.api.Spreadsheets.DeveloperMetadata,'search','metadataSearch'],[f.api.Spreadsheets,'batchUpdate','metadataBatchUpdate']]){const fn=target[method];target[method]=(...a)=>{count(counter);return fn(...a);};}
  const atomic=f.api.Spreadsheets.Values.batchUpdateByDataFilter;f.api.Spreadsheets.Values.batchUpdateByDataFilter=(...a)=>{count('batchWrites');return atomic(...a);};
  const flush=f.app.flush;f.app.flush=()=>{count('flush');return flush();};
  for(const name of ['read','create','delete','createLabel','renameLabel']){const fn=h.deps.gmail[name];h.deps.gmail[name]=(...a)=>{count(name==='read'?'gmailReads':'gmailWrites');return fn(...a);};}
@@ -20,7 +22,7 @@ function fixture(){
  return {deps,counts,reset};
 }
 function run(){
- const result={scenario:{filters:108,labelCreates:30,labelRenames:20,latencyMsPerCall:25},legacy:{},jobs:{}};
+ const result={scenario:{filters:108,labelCreates:30,labelRenames:20,latencyMsPerCall:25,window:'apply/accept through completion; excludes setup and approval preparation',measurement:'synthetic instrumented calls only; not live GAS timing',excluded:['getRange and sheet accessors','TextFinder','Properties and locks','RichTextValue construction','scheduler','service batching/caching behavior']},legacy:{},jobs:{}};
  for(const mode of ['legacy','jobs']){
   const f=fixture(),sync=Sync.create(f.deps);sync.preview();const ticket=sync.prepare();f.reset();const start=performance.now();let outcome,runs=0,maxSimulatedExecutionMillis=0;
   if(mode==='legacy')outcome=sync.apply(ticket,true);

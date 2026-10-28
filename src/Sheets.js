@@ -83,7 +83,10 @@ var GFMSheets = (function () {
     }
     function rowAnchors(s,metadata){
       const sheetId=s.getSheetId(),response=d.api.Spreadsheets.DeveloperMetadata.search({dataFilters:[{developerMetadataLookup:{metadataKey:metadata,metadataLocation:{sheetId},locationMatchingStrategy:'INTERSECTING_LOCATION'}}]},d.book.getId());
-      return (response.matchedDeveloperMetadata||[]).map(m=>m.developerMetadata).filter(m=>m.location?.dimensionRange?.sheetId===sheetId).map(m=>({value:m.metadataValue,row:m.location.dimensionRange.startIndex+1}));
+      return (response.matchedDeveloperMetadata||[]).map(m=>m.developerMetadata).filter(m=>m.location?.dimensionRange?.sheetId===sheetId).map(m=>({value:m.metadataValue,id:m.metadataId,row:m.location.dimensionRange.startIndex+1}));
+    }
+    function rowAnchorIds(name,metadata){
+      const ids=new Map();for(const m of rowAnchors(sheet(name),metadata)){if(ids.has(m.value))throw Error(name+'の行メタデータが重複しています');if(!Number.isSafeInteger(m.id))throw Error(name+'の行メタデータIDが不明です');ids.set(m.value,m.id);}return ids;
     }
     function ensureRowAnchors(name,metadata){
       const s=sheet(name),sheetId=s.getSheetId(),raw=table(name),anchors=rowAnchors(s,metadata),counts=new Map(),requests=[];
@@ -108,9 +111,9 @@ var GFMSheets = (function () {
     function ensureLabelKeys(uuid){initializeKeys('Labels','GFM_LABEL',uuid);readLabelRows();}
     function appendLabelRows(rows){append('Labels',rows.map(r=>schemas.Labels.map(k=>r[k])));labelAnchors();const actual=readLabelRows();for(const r of rows){const found=actual.filter(a=>a.LabelKey===r.LabelKey);if(found.length!==1||schemas.Labels.some(k=>String(found[0][k])!==stringify(r[k])))throw Error('Labels書き込みの読み返しが不一致');}}
     function atomicFields(name,metadata,key,patch){
-      const cols=schemas[name],matches=sheet(name).createDeveloperMetadataFinder().withKey(metadata).withValue(token(key)).find();if(matches.length!==1)throw Error(name+'の行メタデータが不明/重複しています');
+      const cols=schemas[name],id=rowAnchorIds(name,metadata).get(token(key));if(id===undefined)throw Error(name+'の行メタデータが不明/重複しています');
       const values=Array(cols.length).fill(null);for(const k of Object.keys(patch)){if(!cols.includes(k))throw Error('不正な列');const v=stringify(patch[k]);if(v.length>limit)throw Error('セルが長すぎます');values[cols.indexOf(k)]=v;}
-      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
       if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw Error(name+'の行更新が不一致です');d.app.flush();
     }
     function updateLabelRow(key,patch){
@@ -142,9 +145,9 @@ var GFMSheets = (function () {
           if(stringify(actual[0][field])!==stringify(original[0][field])&&stringify(actual[0][field])!==stringify(value))throw Error('実行中にシートが変更されています');
           actual[0][field]=original[0][field];target[0][field]=stringify(value);values[schemas[name].indexOf(field)]=stringify(value);
         }
-        if(!anchors[name])anchors[name]=sheet(name).createDeveloperMetadataFinder().withKey(metadata).find();
-        const match=anchors[name].filter(m=>m.getValue()===token(p.key));if(match.length!==1)throw Error('行メタデータが不明または重複しています');
-        data.push({dataFilter:{developerMetadataLookup:{metadataId:match[0].getId()}},majorDimension:'ROWS',values:[values]});
+        if(!anchors[name])anchors[name]=rowAnchorIds(name,metadata);
+        const id=anchors[name].get(token(p.key));if(id===undefined)throw Error('行メタデータが不明または重複しています');
+        data.push({dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]});
       }
       const cfg=t=>C.stable({filters:C.config(t.Filters),labels:L.config(t.Labels)});
       if(cfg(before)!==cfg(expected))throw Error('実行中にシートの定義が変更されています');
@@ -214,13 +217,13 @@ var GFMSheets = (function () {
     }
     function updateRow(key,patch) {
       const rs=readRows();if(rs.filter(r=>r.RuleKey===key).length!==1)throw new Error('RuleKeyが不明または重複しています: '+key);
-      const matches=sheet('Filters').createDeveloperMetadataFinder().withKey('GFM').withValue(token(key)).find();
-      if(matches.length!==1)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
+      const id=rowAnchorIds('Filters','GFM').get(token(key));
+      if(id===undefined)throw new Error('RuleKeyの行メタデータがありません。再プレビューしてください');
       const values=Array(C.columns.length).fill(null);
       Object.keys(patch).forEach(k=>{if(!C.columns.includes(k)||C.editable.includes(k))throw new Error('システム列以外は更新できません: '+k);const value=stringify(patch[k]);if(value.length>limit)throw new Error('セルが長すぎます');values[C.columns.indexOf(k)]=value;});
       if(!Object.keys(patch).length)return;
       // A metadata ID follows its row when the user sorts. RAW + null skips other cells.
-      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:matches[0].getId()}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
+      const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data:[{dataFilter:{developerMetadataLookup:{metadataId:id}},majorDimension:'ROWS',values:[values]}]},d.book.getId());
       if(!response||response.totalUpdatedRows!==1||response.totalUpdatedSheets!==1)throw new Error('RuleKeyの行が更新できません。削除/並替えを確認してください');
       d.app.flush();
       const found=readRows().find(r=>r.RuleKey===key);

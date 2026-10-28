@@ -11,6 +11,24 @@ var GFMJobs=(function(){
     function head(j){j.updatedAt=d.now();d.state.set('filterJob',j);}
     function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase})});}catch(_){j.historyWarning=true;head(j);}}
     function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,job:true});}
+    function cleanupTransfer(a){
+      const saved=d.state.get('cleanup'),binding=a.legacyCleanup;
+      if(!saved&&!binding)return null;
+      if(!saved||!binding||digest(saved)!==digest(binding.source))throw Error('中断した置換の復旧記録が変更されています');
+      identity(binding);const source=binding.source,entries=a.entries.filter(e=>e.cleanup),old=a.state.filters.find(f=>f.id===source.oldId),fresh=a.state.filters.find(f=>f.id===source.newId);
+      if(entries.length!==1||entries[0].operation!=='DELETE'||entries[0].ruleKey!==source.ruleKey||entries[0].before?.id!==source.oldId||entries[0].keepId!==source.newId||!a.keys.includes(source.ruleKey)||!old||!fresh||source.oldId===source.newId||digest(C.normalize(old))!==source.beforeHash||digest(C.normalize(fresh))!==source.afterHash)throw Error('中断した置換の承認対象・旧新IDが一致しません');
+      return {sourceHash:digest(source),ruleKey:source.ruleKey,oldId:source.oldId,newId:source.newId,afterHash:source.afterHash};
+    }
+    function finishLegacyCleanup(j,a,live,rows){
+      const c=j.legacyCleanup;if(!c)return;
+      const binding=a.legacyCleanup,saved=d.state.get('cleanup');identity(binding);
+      if(digest(binding.source)!==c.sourceHash||saved&&digest(saved)!==c.sourceHash||d.state.get('pending')||d.state.get('labelPending'))throw Error('中断した置換の復旧記録が変更されています');
+      const fresh=live.filters.find(f=>f.id===c.newId);
+      if(live.filters.some(f=>f.id===c.oldId)||!fresh||digest(C.normalize(fresh))!==c.afterHash||rows.filter(r=>r.RuleKey===c.ruleKey&&r.GmailFilterId===c.newId).length!==1)throw Error('中断した置換の完了照合に失敗しました');
+      // This is reconciliation of the approved deletion, never a fresh mutation.
+      // Keep the immutable association on the job after removing the old journal.
+      d.state.remove('cleanup');
+    }
     function accept(ticket,approved){
       const old=d.state.get('filterJob');
       if(old){identity(old);if(old.runId===ticket.runId)return view(old);if(!terminal(old)||old.uncertain||old.status==='PAUSED'&&old.intentPhase&&ticket.previousRunId!==old.runId)throw Error('保存済みジョブの進捗・結果不明を先に確認してください');}
@@ -18,8 +36,10 @@ var GFMJobs=(function(){
       if(!prepared||C.stable(prepared)!==C.stable(ticket)||!ticket.jobApproval)throw Error('承認準備が失効しました。再確認してください');
       if(d.now()-ticket.preparedAt>=15*60*1000)throw Error('確認の期限が切れました。再確認してください');
       if(!approved)return {status:'CANCELLED',completed:0,runId:ticket.runId};
-      if(d.state.get('pending')||d.state.get('labelPending')||d.state.get('cleanup'))throw Error('中断操作を先に復旧してください');
-      const j={runId:ticket.runId,ticket:C.clone(ticket),actor:d.actor(),bookId:d.bookId,status:'ACCEPTED',phase:'SHEET_READ',createdAt:d.now(),updatedAt:d.now(),heartbeat:d.now(),leaseUntil:0,attempts:0,runs:0,timings:{},filters:{planned:ticket.jobCounts?.filters||0,completed:0,remaining:ticket.jobCounts?.filters||0},labels:{planned:ticket.jobCounts?.labels||0,completed:0,remaining:ticket.jobCounts?.labels||0}};
+      if(d.state.get('pending')||d.state.get('labelPending'))throw Error('中断操作を先に復旧してください');
+      const legacyCleanup=d.state.get('cleanup')||ticket.legacyCleanupHash?cleanupTransfer(d.store.readJobData(ticket.jobApproval)):null;
+      if(legacyCleanup&&ticket.legacyCleanupHash!==legacyCleanup.sourceHash)throw Error('中断した置換の承認記録が一致しません');
+      const j={runId:ticket.runId,legacyCleanup,ticket:C.clone(ticket),actor:d.actor(),bookId:d.bookId,status:'ACCEPTED',phase:'SHEET_READ',createdAt:d.now(),updatedAt:d.now(),heartbeat:d.now(),leaseUntil:0,attempts:0,runs:0,timings:{},filters:{planned:ticket.jobCounts?.filters||0,completed:0,remaining:ticket.jobCounts?.filters||0},labels:{planned:ticket.jobCounts?.labels||0,completed:0,remaining:ticket.jobCounts?.labels||0}};
       head(j);d.state.remove('prepared');d.state.remove('preview');
       try{d.scheduler.ensure();}catch(_){j.status='PAUSED';j.error='自動実行トリガーを登録できません。権限を確認して残りの差分を再確認してください';head(j);}
       history(j,j.status);return view(j);
@@ -58,7 +78,7 @@ var GFMJobs=(function(){
     function recoveryForPreparation(runId){
       const j=d.state.get('filterJob');if(!j||j.runId!==runId||!terminal(j))throw Error('復旧元のジョブが変化しています');identity(j);
       const a=d.store.readJobData(j.ticket.jobApproval),m=j.checkpoint?d.store.readJobData(j.checkpoint):null,i=m?.intent;
-      if(!i){j.uncertain=0;head(j);return [];}
+      if(!i){if(j.legacyCleanup){const live=d.gmail.read();if(!live.filters.some(f=>f.id===j.legacyCleanup.oldId))finishLegacyCleanup(j,a,live,d.store.readRows());}j.uncertain=0;head(j);return [];}
       const intent=i.phase==='PATCH'?i.resume:i,e=intent?.entry;if(!e){j.uncertain=0;head(j);return [];}
       const live=d.gmail.read(),extras=[];
       if(e.kind==='LABEL'){
@@ -76,10 +96,11 @@ var GFMJobs=(function(){
           const old=e.before&&live.filters.find(f=>f.id===e.before.id);
           if(old){if(!C.equal(old,e.before))throw Error('置換途中の旧フィルターが変更されています');extras.push({...C.clone(e),operation:'DELETE',after:null,keepId:id,jobCleanup:true,warnings:['中断した置換の旧フィルターを削除します。照合済みの新フィルターを維持します']});}
         }else if(e.operation==='DELETE'){
-          const old=live.filters.find(f=>f.id===e.before.id);if(old&&!C.equal(old,e.before))throw Error('削除対象が変更されています');id=old?e.before.id:e.keepId||'';
+          const old=live.filters.find(f=>f.id===e.before.id);if(old&&!C.equal(old,e.before))throw Error('削除対象が変更されています');id=e.keepId||(old?e.before.id:'');
         }
         const original=a.rows.filter(r=>r.RuleKey===e.ruleKey);if(original.length!==1)throw Error('承認したフィルターのキーが一意ではありません');
         recoverAssociation('FILTER',e.ruleKey,original[0].GmailFilterId,id,{GmailFilterId:id,SyncedAt:stamp(),Result:'復旧確認済み・残りを再確認'});
+        if(j.legacyCleanup&&!live.filters.some(f=>f.id===j.legacyCleanup.oldId))finishLegacyCleanup(j,a,live,d.store.readRows());
       }
       j.uncertain=0;j.recovered=true;head(j);return extras;
     }
@@ -129,7 +150,7 @@ var GFMJobs=(function(){
           p.phase='VERIFY_BACKUP';
         }else if(p.phase==='VERIFY_BACKUP'){
           const a=d.store.readJobData(p.approval);if(remote(d.store.readBackup(p.snapshotId))!==remote(a.state))throw Error('バックアップ読み返しが一致しません');
-          const ticket={runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:p.ticket?.preparedAt??d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&changed(e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&changed(e)).length}};
+          const ticket={legacyCleanupHash:a.legacyCleanup?digest(a.legacyCleanup.source):undefined,runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:p.ticket?.preparedAt??d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&changed(e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&changed(e)).length}};
           if(a.selected){
             let saved;try{saved=d.store.readScope(p.snapshotId);}catch(_){if(p.scopeStarted)throw Error('選択範囲の保存途中です。取得し直してください');}
             if(saved===undefined){p.scopeStarted=true;d.state.set('filterPreparation',p);d.store.writeScope(p.snapshotId,a.keys,stamp());saved=d.store.readScope(p.snapshotId);}
@@ -202,7 +223,7 @@ var GFMJobs=(function(){
             if(patches.length)applyPatches(patches);m.refCursor+=slice.length;if(m.refCursor>=rs.length)j.phase='APPLY';save();});return;
         }
         if(j.phase==='VERIFY'){
-          measure('VERIFY',()=>{assertRows();assertRemote(d.gmail.read());});j.status='OK';j.leaseUntil=0;save();history(j,'OK');d.scheduler.clear();return;
+          measure('VERIFY',()=>{assertRows();assertRemote(d.gmail.read());finishLegacyCleanup(j,a,state,rs);});j.status='OK';j.leaseUntil=0;save();history(j,'OK');d.scheduler.clear();return;
         }
         measure('GMAIL_UPDATE',()=>{
           if(m.intent?.phase==='PATCH'){reconcilePatch();return;}
@@ -232,13 +253,14 @@ var GFMJobs=(function(){
           if(e.operation==='CREATE'||e.operation==='REPLACE'){
             if(state.filters.length>=1000)pause('フィルター上限1000件のため停止しました');m.intent={phase:'CREATE',entry:e};save();assertRows();d.gmail.create(e.after);return;
           }
-          if(e.operation==='DELETE'){if(e.jobCleanup){const keep=state.filters.find(f=>f.id===e.keepId);if(!keep)pause('置換後の維持対象が見つかりません');}m.intent={phase:'DELETE',entry:e,newId:e.keepId||''};save();assertRows();d.gmail.delete(e.before.id);return;}
+          if(e.operation==='DELETE'){if(e.jobCleanup||e.cleanup){const keep=state.filters.find(f=>f.id===e.keepId);if(!keep)pause('置換後の維持対象が見つかりません');}m.intent={phase:'DELETE',entry:e,newId:e.keepId||''};save();assertRows();d.gmail.delete(e.before.id);return;}
           m.intent={phase:'DONE',entry:e,newId:e.matchedId||e.before?.id||''};save();
         });
       }
       try{
       m=j.checkpoint?d.store.readJobData(j.checkpoint):{filterPatches:{},labelPatches:{},createdFilters:[],deletedFilters:[],labelChanges:{},cursor:0,refCursor:0,intent:null};
       a=d.store.readJobData(j.ticket.jobApproval);
+      if(j.legacyCleanup){identity(a.legacyCleanup);if(digest(a.legacyCleanup.source)!==j.legacyCleanup.sourceHash)pause('中断した置換の承認記録が変更されています');const c=d.state.get('cleanup');if(c?digest(c)!==j.legacyCleanup.sourceHash:j.phase!=='VERIFY')pause('中断した置換の復旧記録が変更されています');if(d.state.get('pending')||d.state.get('labelPending'))pause('中断操作が追加されています');}
         try{
         const record=v=>v&&typeof v==='object'&&!Array.isArray(v);
         if(!record(a)||!Array.isArray(a.rows)||!Array.isArray(a.labelRows)||!record(a.state)||!['filters','labels','forwarding'].every(k=>Array.isArray(a.state[k]))||!Array.isArray(a.entries)||!Array.isArray(a.keys)||!record(a.bindings))throw Error('approval shape');
