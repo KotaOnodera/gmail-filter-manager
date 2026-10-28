@@ -31,7 +31,7 @@ test('reloaded outstanding scan checks the same request and never assumes saved 
  f.resolve('boot',{messageJob:run});f.resolve('resume',{status:'RUNNING',action:'messagesScan',runId:'m',messageJob:run});await turn();assert.match(text(f),/検索リクエストの完了を確認しています/);assert.match(text(f),/検索済み 延べ2件/);assert.doesNotMatch(text(f),/サーバーで処理中/);assert.equal(f.pending.filter(p=>['messagesScan','messagesApply'].includes(p.command)).length,0);
 });
 test('saved status retrieval has a deadline and retry reads the same run; a newer action fences old reads',async()=>{
- const f=await opened(),reload=fixture(f.storage);reload.resolve('boot',{messageJob:run});await turn();const timeout=[...reload.timers.values()].find(t=>t.ms===10000);assert.ok(timeout);timeout.fn();await turn();assert.match(text(reload),/取得し直す/);
+ const f=await opened(),reload=fixture(f.storage);reload.resolve('boot',{messageJob:run});await turn();const timeout=[...reload.timers.values()].find(t=>t.ms===30000);assert.ok(timeout);timeout.fn();await turn();assert.match(text(reload),/取得し直す/);
  reload.click('取得し直す');await turn();assert.equal(reload.pending.filter(p=>p.command==='messagesStatus').length,2);assert.equal(reload.pending.filter(p=>p.command==='preview').length,0);
  reload.resolve('messagesStatus',run);reload.resolve('messagesStatus',run);await turn();assert.match(text(reload),/続行待ち/);
  const stale=fixture(f.storage);stale.resolve('boot',{messageJob:run});await turn();stale.click('import');stale.resolve('importCheck',{count:1,total:1,token:'new'});await turn();stale.resolve('messagesStatus',run);await turn();assert.match(text(stale),/インポートを確認/);assert.doesNotMatch(text(stale),/続行待ち/);
@@ -45,7 +45,7 @@ test('starting a search renders the actual first outstanding scan, then zero REA
 test('timed-out saved status retries its original run even when boot reports a different latest job',async()=>{
  const storage=new Map([['gfm.savedView.v1',JSON.stringify({viewId:'',action:'messagesStatus',runId:'original-run'})]]),f=fixture(storage);
  f.resolve('boot',{messageJob:{...run,runId:'new-run'}});await turn();assert.equal(f.pending.find(p=>p.command==='messagesStatus').input.runId,'original-run');
- [...f.timers.values()].find(t=>t.ms===10000).fn();await turn();f.click('取得し直す');await turn();
+ [...f.timers.values()].find(t=>t.ms===30000).fn();await turn();f.click('取得し直す');await turn();
  assert.deepEqual(f.pending.filter(p=>p.command==='messagesStatus').map(p=>p.input.runId),['original-run','original-run']);
  f.resolve('messagesStatus',{...run,runId:'original-run'});f.resolve('messagesStatus',{...run,runId:'original-run'});await turn();assert.match(text(f),/実行ID: original-run/);assert.doesNotMatch(text(f),/実行ID: new-run/);assert.equal(f.pending.filter(p=>['messagesStart','messagesScan','messagesApply'].includes(p.command)).length,0);
 });
