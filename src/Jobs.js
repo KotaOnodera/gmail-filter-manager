@@ -78,8 +78,10 @@ var GFMJobs=(function(){
     function recoveryForPreparation(runId){
       const j=d.state.get('filterJob');if(!j||j.runId!==runId||!terminal(j))throw Error('復旧元のジョブが変化しています');identity(j);
       const a=d.store.readJobData(j.ticket.jobApproval),m=j.checkpoint?d.store.readJobData(j.checkpoint):null,i=m?.intent;
-      if(!i){if(j.legacyCleanup){const live=d.gmail.read();if(!live.filters.some(f=>f.id===j.legacyCleanup.oldId))finishLegacyCleanup(j,a,live,d.store.readRows());}j.uncertain=0;head(j);return [];}
-      const intent=i.phase==='PATCH'?i.resume:i,e=intent?.entry;if(!e){j.uncertain=0;head(j);return [];}
+      const intent=i?.phase==='PATCH'?i.resume:i,e=intent?.entry;
+      // Reference-only PATCH intents have no API entry to recover. The approved
+      // legacy deletion may nevertheless be complete and still need readback.
+      if(!e){if(j.legacyCleanup){const live=d.gmail.read();if(!live.filters.some(f=>f.id===j.legacyCleanup.oldId))finishLegacyCleanup(j,a,live,d.store.readRows());}j.uncertain=0;head(j);return [];}
       const live=d.gmail.read(),extras=[];
       if(e.kind==='LABEL'){
         const known=new Set(a.state.labels.map(l=>l.id)),id=intent.newId||e.matchedId;
