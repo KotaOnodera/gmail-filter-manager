@@ -147,11 +147,11 @@ var GFMSync = (function () {
       return {runId,entries:current.entries,summary:summary(current.entries),labels:resolve(current.rows,current.labelRows,current.state).planState.labels};
     }
     function capturePreparation(runId,selectedKeys) {
-      ready();
+      ready();d.store.ensureKeys(d.uuid);
       if(d.state.get('pending')||d.state.get('labelPending'))throw Error('中断操作を先に復旧してください');
       const current=runId?checkedPreview():snapshot();
       if(runId&&current.runId!==runId)throw Error('別の差分が表示されています。再確認してください');
-      const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=targets(current,keys);
+      const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=keys===null?current.entries:targets(current,keys);
       return {runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
     }
     function prepareView(selectedKeys) {

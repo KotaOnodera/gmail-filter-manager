@@ -78,11 +78,11 @@ var GFMWeb = (function () {
       h.pointer=d.store.writeWebView(viewId,data);d.state.set('webView:'+viewId,h);ids.push(viewId);d.state.set('webViewIndex',ids);return {...result,_view:locator(h)};
     }
     function readyPreparation(preparationId){
-      const progress=d.jobs.prepareStatus(preparationId);if(progress.status!=='READY')return progress;
+      const progress=d.jobs.prepareStatus(preparationId);if(progress.status!=='READY')return withNavigation(progress);
       // PREPARING checkpoints remain readable during a running worker. Once
       // READY, re-read and fence validation plus token issuance against preview,
       // replacement preparation and apply using the shared operation lock.
-      return d.withLock(()=>{
+      return withNavigation(d.withLock(()=>{
         const p=d.jobs.prepareStatus(preparationId);if(p.status!=='READY')return p;
         if(!same(p.ticket,d.state.get('prepared')))throw Error('確認が失効しました。差分を再取得してください');
         const captured=d.store.readJobData(p.ticket.jobApproval);
@@ -93,7 +93,7 @@ var GFMWeb = (function () {
         if(old&&old.ticket.runId===p.ticket.runId)return {...p,...p.ticket,token:old.token,confirmation:confirmationStatus('webApproval',old.token)};
         if(now()>=p.ticket.preparedAt+approvalTTL)return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'EXPIRED')};
         return {...p,...p.ticket,...confirmation('webApproval',p.ticket,remote)};
-      });
+      }));
     }
     function loadView(input){
       const h=typeof input.viewId==='string'&&input.viewId.length<=128?d.state.get('webView:'+input.viewId):null;
@@ -148,6 +148,10 @@ var GFMWeb = (function () {
           if(h.action==='prepareRemaining'||v.mode!=='SELECTED')keys=source?.mode==='SELECTED'?source.keys:a.keys;
           const allowed=new Set(a.keys);if(keys.some(k=>!allowed.has(k)))throw Error('元の承認範囲外の対象が選択されています。保存済みの状況を確認してください');
           mode='SELECTED';original=v.originalEntries||v.result.entries||a.entries;
+        }
+        if(mode==='ALL'&&d.jobs&&!previousRunId){
+          const p=d.state.get('filterPreparation');if(!owned(p)||p.preparationId!==h.preparationId||!p.approval)throw Error('元の確認準備を検証できません。取得し直してください');
+          d.state.remove('webApproval');result=d.jobs.prepareStart({reconfirmationFrom:p.approval});result=saveView('prepareStart',{_viewMode:'ALL'},result);return {status:'OK',action:'prepareStart',mode:'ALL',keys:[],result};
         }
         d.state.remove('webApproval');action='preview';result={...d.controller.preview(),...(previousRunId?{previousRunId}:{})};
       }else throw Error('この画面からは再確認できません');

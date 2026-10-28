@@ -37,7 +37,7 @@ var GFMJobs=(function(){
     }
     function prepareStart(input){
       input=input||{};const active=d.state.get('filterJob');if(active&&!terminal(active))throw Error('受付済みジョブの進捗を確認してください');
-      const preparationId=d.uuid(),request=d.store.writeJobData(preparationId,{runId:input.runId||'',keys:input.keys===undefined?null:input.keys,previousRunId:input.previousRunId||''});
+      const preparationId=d.uuid(),request=d.store.writeJobData(preparationId,{runId:input.runId||'',keys:input.keys===undefined?null:input.keys,previousRunId:input.previousRunId||'',reconfirmationFrom:input.reconfirmationFrom||null});
       const p={runId:preparationId,preparationId,actor:d.actor(),bookId:d.bookId,status:'PREPARING',phase:'READ',request,createdAt:d.now(),updatedAt:d.now(),runs:0,previousRunId:input.previousRunId||''};
       d.state.remove('prepared');d.state.set('filterPreparation',p);d.scheduler.ensure();return {preparationId,status:p.status,phase:p.phase};
     }
@@ -83,11 +83,22 @@ var GFMJobs=(function(){
       }
       j.uncertain=0;j.recovered=true;head(j);return extras;
     }
+    function preparationView(p){
+      const result={preparationId:p.preparationId,previousRunId:p.previousRunId||'',createdAt:p.createdAt,status:p.status,phase:p.phase,error:p.error||'',timings:p.timings||{},updatedAt:p.updatedAt,recovered:!!p.recovered};
+      if(['READY','BLOCKED','NOOP'].includes(p.status)){const a=d.store.readJobData(p.approval);return {...result,runId:a.runId,summary:a.summary,ticket:p.ticket,entries:a.entries,labels:L.plan(a.labelRows,a.state.labels).labels,reconfirmation:a.reconfirmation,dependencies:[...new Map(a.entries.filter(e=>e.kind!=='LABEL').map(e=>a.bindings?.[e.ruleKey]).filter(Boolean).map(ref=>[ref.key,ref])).values()]};}return result;
+    }
     function prepareStatus(id){
-      const p=d.state.get('filterPreparation');if(!p||p.preparationId!==id)throw Error('準備中の確認は見つかりません');identity(p);
-      if(p.status==='PREPARING'&&!d.scheduler.exists())d.withLock(()=>d.scheduler.ensure());
-      const result={preparationId:id,previousRunId:p.previousRunId||'',createdAt:p.createdAt,status:p.status,phase:p.phase,error:p.error||'',timings:p.timings||{},updatedAt:p.updatedAt};
-      if(p.status==='READY'){const a=d.store.readJobData(p.approval);return {...result,ticket:p.ticket,entries:a.entries,labels:L.plan(a.labelRows,a.state.labels).labels};}return result;
+      let p=d.state.get('filterPreparation');if(!p||p.preparationId!==id)throw Error('準備中の確認は見つかりません');identity(p);
+      if(p.status==='PREPARING'&&(!d.scheduler.exists()||d.now()-p.updatedAt>5*60*1000)){
+        try{return d.withLock(()=>{p=d.state.get('filterPreparation');if(!p||p.preparationId!==id)throw Error('別の確認準備が開始されています');identity(p);
+          if(p.status!=='PREPARING')return preparationView(p);
+          const stale=d.now()-p.updatedAt>5*60*1000;
+          if(stale&&(p.repairs||0)>=3){p.status='PAUSED';p.error='確認準備の自動実行が停止しています。権限・実行割り当てを確認して取得し直してください';d.scheduler.clear();}
+          else {if(stale){p.repairs=(p.repairs||0)+1;d.scheduler.clear();}d.scheduler.ensure();p.recovered=true;}
+          p.updatedAt=d.now();d.state.set('filterPreparation',p);return preparationView(p);
+        });}catch(e){if(!p||p.preparationId!==id)throw e;identity(p);return preparationView(p);}
+      }
+      return preparationView(p);
     }
     function prepareRun(p){
       identity(p);const started=d.now(),phase=p.phase;try{
@@ -96,20 +107,40 @@ var GFMJobs=(function(){
           const request=d.store.readJobData(p.request),extras=request.previousRunId?recoveryForPreparation(request.previousRunId):[],sync=typeof module!=='undefined'?require('./Sync'):GFMSync,a=sync.create(d).capturePreparation(request.runId,request.keys);
           if(request.previousRunId){const previous=d.state.get('filterJob'),original=d.store.readJobData(previous.ticket.jobApproval),allowed=new Set(original.keys);if(a.keys.some(k=>!allowed.has(k)))throw Error('元の選択範囲外の依存ラベルが必要です。選択を再確認してください');}
           if(extras.length){a.entries=[...a.entries.filter(e=>e.kind==='LABEL'),...extras,...a.entries.filter(e=>e.kind!=='LABEL')];a.summary.DELETE+=extras.length;}
+          if(request.reconfirmationFrom){
+            const original=d.store.readJobData(request.reconfirmationFrom),key=e=>e.ruleKey||e.key,before=new Map(original.entries.map(e=>[key(e),e])),after=new Map(a.entries.map(e=>[key(e),e])),definition=e=>({operation:e.operation,before:e.before,after:e.after,errors:e.errors});
+            a.reconfirmation={missing:[...before.keys()].filter(k=>!after.has(k)),invalid:a.entries.filter(e=>e.operation==='ERROR').map(key),changed:[...before.keys()].filter(k=>after.has(k)&&digest(definition(before.get(k)))!==digest(definition(after.get(k))))};
+          }
           p.approval=d.store.writeJobData(p.preparationId,a);p.phase='BACKUP';
+          if(a.entries.some(e=>e.operation==='ERROR')){p.status='BLOCKED';p.phase='VALIDATION';p.error='入力エラーがあるため全部適用できません。Filters / Labelsの修正先を確認してください';}
+          else if(!a.selected&&!a.entries.some(changed)){p.status='NOOP';p.phase='COMPLETE';}
+          if(p.status!=='PREPARING')d.scheduler.clear();
         }else if(p.phase==='BACKUP'){
-          const a=d.store.readJobData(p.approval);p.snapshotId=p.snapshotId||d.uuid();
-          // Snapshot IDs are append-only. If a write succeeded and its response
-          // was lost, require a fresh preparation rather than overwrite it.
-          const result=d.store.backup(a.state,p.snapshotId,stamp());
-          if(!result||result.id!==p.snapshotId||result.hash!==remote(a.state))throw Error('バックアップ保存の検証に失敗しました');p.phase='VERIFY_BACKUP';
+          const a=d.store.readJobData(p.approval);
+          if(p.backupStarted){
+            // A terminated worker may already have committed this append-only ID.
+            // Read it back; never create another backup or overwrite uncertain data.
+            if(remote(d.store.readBackup(p.snapshotId))!==remote(a.state))throw Error('保存途中のバックアップが不完全です。履歴を残して取得し直してください');
+          }else{
+            p.snapshotId=d.uuid();p.backupStarted=true;p.updatedAt=d.now();d.state.set('filterPreparation',p);
+            const result=d.store.backup(a.state,p.snapshotId,stamp());
+            if(!result||result.id!==p.snapshotId||result.hash!==remote(a.state))throw Error('バックアップ保存の検証に失敗しました');
+          }
+          p.phase='VERIFY_BACKUP';
         }else if(p.phase==='VERIFY_BACKUP'){
           const a=d.store.readJobData(p.approval);if(remote(d.store.readBackup(p.snapshotId))!==remote(a.state))throw Error('バックアップ読み返しが一致しません');
-          const ticket={runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&changed(e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&changed(e)).length}};
-          if(a.selected){d.store.writeScope(p.snapshotId,a.keys,stamp());ticket.selection={hash:digest(a.keys),count:a.keys.length};}
-          p.ticket=ticket;p.phase='READY';p.status='READY';d.state.set('prepared',ticket);d.scheduler.clear();
+          const ticket={runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:p.ticket?.preparedAt??d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&changed(e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&changed(e)).length}};
+          if(a.selected){
+            let saved;try{saved=d.store.readScope(p.snapshotId);}catch(_){if(p.scopeStarted)throw Error('選択範囲の保存途中です。取得し直してください');}
+            if(saved===undefined){p.scopeStarted=true;d.state.set('filterPreparation',p);d.store.writeScope(p.snapshotId,a.keys,stamp());saved=d.store.readScope(p.snapshotId);}
+            if(digest(saved)!==digest(a.keys))throw Error('選択対象の読み返しが一致しません');ticket.selection={hash:digest(a.keys),count:a.keys.length};
+          }
+          // Persist expiry and receipt before issuing READY. Termination after
+          // this point must neither renew the deadline nor write scope twice.
+          p.ticket=ticket;d.state.set('filterPreparation',p);
+          p.phase='READY';p.status='READY';d.state.set('prepared',ticket);d.scheduler.clear();
         }
-      }catch(_){p.status='PAUSED';p.error='確認準備を中断しました。シートとGmailの差分を再確認してください';d.scheduler.clear();}
+      }catch(e){p.status='PAUSED';p.error=('確認準備を中断しました。'+String(e.message||e)).slice(0,300);d.scheduler.clear();}
       p.timings=p.timings||{};p.timings[phase]=(p.timings[phase]||0)+Math.max(0,d.now()-started);p.updatedAt=d.now();d.state.set('filterPreparation',p);return {preparationId:p.preparationId,status:p.status,phase:p.phase,error:p.error||''};
     }
     function run(){return d.withLock(()=>{
