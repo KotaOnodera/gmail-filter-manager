@@ -11,7 +11,7 @@ var GFMJobs=(function(){
     const stamp=()=>new Date(d.now()).toISOString();
     function identity(j){if(j.actor!==d.actor()||j.bookId!==d.bookId)throw Error('保存済みジョブの実行者・所有者またはスプレッドシートが一致しません');}
     function head(j){j.updatedAt=d.now();d.state.set('filterJob',j);}
-    function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase,diagnostic:j.diagnostic||null})});}catch(_){j.historyWarning=true;head(j);}}
+    function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase,diagnostic:j.diagnostic||null,verification:j.verification||null,report:!!j.verification})});}catch(_){j.historyWarning=true;head(j);}}
     function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,diagnostic:j.diagnostic||null,policy:j.ticket.policy,verification:j.verification||null,job:true});}
     function cleanupTransfer(a){
       const saved=d.state.get('cleanup'),binding=a.legacyCleanup;
@@ -228,7 +228,7 @@ var GFMJobs=(function(){
             if(patches.length)applyPatches(patches);m.refCursor+=slice.length;if(m.refCursor>=rs.length)j.phase='APPLY';save();});return;
         }
         if(j.phase==='VERIFY'){
-          measure('VERIFY',()=>{assertRows();const live=d.gmail.read();assertRemote(live);finishLegacyCleanup(j,a,state,rs);if(authoritative(a)){const result=P.report(a,rs,ls,live);m.verification=result;j.verification={status:result.status,inScope:result.inScope,outside:result.outside,remoteOnly:result.remoteOnly,at:d.now()};}});j.status='OK';j.leaseUntil=0;save();history(j,'OK');d.scheduler.clear();return;
+          measure('VERIFY',()=>{assertRows();const live=d.gmail.read();assertRemote(live);finishLegacyCleanup(j,a,state,rs);if(authoritative(a)){const result=P.report(a,rs,ls,live);m.verification=result;j.verification={status:result.status,inScope:result.inScope,outside:result.outside,remoteOnly:result.remoteOnly,at:d.now()};}});j.status='OK';j.leaseUntil=0;save();if(j.verification)keepVerification(j);history(j,j.verification?.status==='DIFFERENCES'?'OK_WITH_DIFFERENCES':'OK');d.scheduler.clear();return;
         }
         measure('GMAIL_UPDATE',()=>{
           if(m.intent?.phase==='PATCH'){reconcilePatch();return;}
@@ -302,7 +302,18 @@ var GFMJobs=(function(){
         j.status=err.pause||invalid||safe&&!safe.retryable||j.attempts>=5?'PAUSED':'WAITING';j.error=safe?'参照情報の更新に失敗しました（'+safe.stage+' / '+safe.code+'）。'+(safe.retryable&&j.attempts<5?'保存済みの更新意図を照合して再試行します。':'状態を確認して残りの差分を再確認してください。'):invalid?'保存済みジョブの検証に失敗しました。破損したデータを再適用せず確認してください':err.pause?err.message:j.attempts>=5?'保存済みジョブの読取・実行障害が続いたため停止しました。状態を確認してください':'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||j.uncertain||(['CREATE','DELETE','LABEL'].includes(m?.intent?.phase||j.intentPhase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
       return view(j);
     });}
-    function verification(runId){const j=d.state.get('filterJob');if(!j||j.runId!==runId)throw Error('この実行ジョブは見つかりません');identity(j);if(j.status!=='OK'||!j.verification)throw Error('反映後の照合結果はまだありません');const m=d.store.readJobData(j.checkpoint);if(!m.verification||!Array.isArray(m.verification.entries))throw Error('照合結果を検証できません');return {runId,verification:C.clone(j.verification),entries:C.clone(m.verification.entries)};}
+    function keepVerification(j){
+      d.state.set('filterVerification:'+j.runId,{runId:j.runId,actor:j.actor,bookId:j.bookId,checkpoint:j.checkpoint,verification:j.verification});
+      const ids=(d.state.get('filterVerificationIndex')||[]).filter(id=>id!==j.runId);ids.push(j.runId);
+      while(ids.length>12)d.state.remove('filterVerification:'+ids.shift());d.state.set('filterVerificationIndex',ids);
+    }
+    function verification(runId){
+      const current=d.state.get('filterJob'),j=current?.runId===runId?current:d.state.get('filterVerification:'+runId);
+      if(!j||j.runId!==runId)throw Error('この実行ジョブの照合結果は見つかりません');identity(j);
+      if(j.status&&j.status!=='OK'||!j.verification||j.checkpoint?.runId!==runId)throw Error('反映後の照合結果はまだありません');
+      const m=d.store.readJobData(j.checkpoint);if(!m.verification||!Array.isArray(m.verification.entries))throw Error('照合結果を検証できません');
+      return {runId,verification:C.clone(j.verification),entries:C.clone(m.verification.entries),labels:C.clone(m.verification.labels||[])};
+    }
     return {prepareRemaining,prepareStart,prepareStatus,accept,status,run,verification};
   }
   return {create};

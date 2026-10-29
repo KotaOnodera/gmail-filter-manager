@@ -111,7 +111,7 @@ var GFMSync = (function () {
     function checkedPreview() {
       const saved=d.state.get('preview');if(!saved)throw new Error('差分を再プレビューしてください');
       const current=snapshot();
-      if(saved.fingerprint!==current.fingerprint)throw new Error('プレビュー後に設定またはGmailが変更されています。再プレビューしてください');
+      if(d.applyPolicy==='SHEET_AUTHORITATIVE'&&saved.config? saved.config!==digest(allConfig(current.rows,current.labelRows)):saved.fingerprint!==current.fingerprint)throw new Error('プレビュー後に設定またはGmailが変更されています。再プレビューしてください');
       return Object.assign(current,{runId:saved.runId});
     }
     function expandedKeys(current,keys){
@@ -153,7 +153,7 @@ var GFMSync = (function () {
       ready();clearPreview();recoverLabel();recover();d.store.ensureKeys(d.uuid);
       const current=snapshot(),runId=d.uuid();
       d.store.writeDiff(runId,current.entries);
-      d.state.set('preview',{runId,fingerprint:current.fingerprint,at:date()});
+      d.state.set('preview',{runId,fingerprint:current.fingerprint,config:digest(allConfig(current.rows,current.labelRows)),at:date()});
       log(runId,'PREVIEW',{result:current.entries.some(e=>e.operation==='ERROR')?'ERROR':'OK',verification:JSON.stringify(summary(current.entries))});
       return {runId,entries:current.entries,summary:summary(current.entries),labels:resolve(current.rows,current.labelRows,current.state).planState.labels};
     }

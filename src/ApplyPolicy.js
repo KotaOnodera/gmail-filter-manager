@@ -17,7 +17,7 @@ var GFMApplyPolicy=(function(){
   }
   function report(approval,rows,labelRows,live){
     const keys=new Set(approval.keys),entries=plan(rows,labelRows,live,approval.keys).filter(e=>!['NOOP','REMOTE_ONLY'].includes(e.operation)||e.matchedId||e.operation==='REMOTE_ONLY').map(e=>({...e,inScope:!!e.ruleKey&&keys.has(e.ruleKey)}));
-    return {entries,inScope:entries.filter(e=>e.inScope).length,outside:entries.filter(e=>!e.inScope&&e.operation!=='REMOTE_ONLY').length,remoteOnly:entries.filter(e=>e.operation==='REMOTE_ONLY').length,status:entries.length?'DIFFERENCES':'MATCH'};
+    return {entries,labels:core().clone(live.labels),inScope:entries.filter(e=>e.inScope).length,outside:entries.filter(e=>!e.inScope&&e.operation!=='REMOTE_ONLY').length,remoteOnly:entries.filter(e=>e.operation==='REMOTE_ONLY').length,status:entries.length?'DIFFERENCES':'MATCH'};
   }
   return {name,plan,entry,report};
 })();
