@@ -37,7 +37,9 @@ clasp --ignore .clasp.installerignore push
 
 Apps Scriptエディタでインストーラーの `GFM_install` を実行します。初回のAPI有効化と権限については[導入手順](docs/setup.md)を確認してください。
 
-buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時にGitHubからコードを取得せず、ビルド時点の運用ソースを同梱します。GitHub Actionsも検証とビルドを実行し、gas-installer成果物を保存します。通常運用にWebアプリのデプロイは不要です。
+buildはdist/installer/Code.jsとappsscript.jsonを生成します。実行時にGitHubからコードを取得せず、ビルド時点の運用ソースを同梱します。検証とビルドはローカルで実行し、PRのマージ前とGASへの配置前に `npm test`・`npm run check`・`npm run build` の成功を確認します。GitHub ActionsによるCIと成果物の自動保存は行いません。通常運用にWebアプリのデプロイは不要です。
+
+テストを残す基準と削減候補は[テストの見直し](docs/test-audit.md)を参照してください。
 
 ## フィルターの管理
 
