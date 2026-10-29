@@ -163,7 +163,7 @@ var GFMSync = (function () {
       const current=runId?checkedPreview():snapshot();
       if(runId&&current.runId!==runId)throw Error('別の差分が表示されています。再確認してください');
       const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys),entries=keys===null?current.entries:targets(current,keys);
-      return {legacyCleanup:legacyCleanupApproval(entries,current.state),runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
+      return {policy:d.applyPolicy,scopeMode:keys===null?'ALL':'SELECTED',legacyCleanup:legacyCleanupApproval(entries,current.state),runId:runId||d.uuid(),fingerprint:current.fingerprint,summary:summary(entries),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,selected:keys!==null,bindings:resolve(current.rows,current.labelRows,current.state).refs};
     }
     function prepareView(selectedKeys) {
       d.state.remove('prepared');
@@ -172,10 +172,10 @@ var GFMSync = (function () {
       const keys=expandedKeys(current,selectedKeys===undefined||selectedKeys===null?null:selectedKeys);
       const entries=targets(current,keys);
       const snapshotId=backup(current.state);
-      const ticket={runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(entries),preparedAt:d.now()};
+      const ticket={policy:d.applyPolicy,scopeMode:keys===null?'ALL':'SELECTED',runId:current.runId,fingerprint:current.fingerprint,snapshotId,summary:summary(entries),preparedAt:d.now()};
       if(keys!==null){const canonical=keys.slice().sort();d.store.writeScope(snapshotId,canonical,date());const actual=d.store.readScope(snapshotId);if(C.stable(actual)!==C.stable(canonical))throw new Error('選択対象の保存に失敗しました');ticket.selection={hash:digest(canonical),count:canonical.length};}
-      ticket.jobCounts={filters:entries.filter(e=>e.kind!=='LABEL'&&(!['NOOP','REMOTE_ONLY'].includes(e.operation)||e.matchedId)).length,labels:entries.filter(e=>e.kind==='LABEL'&&(e.operation!=='NOOP'||e.matchedId)).length};
-      if(d.store.writeJobData)ticket.jobApproval=d.store.writeJobData(ticket.runId,{legacyCleanup:legacyCleanupApproval(entries,current.state),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,bindings:resolve(current.rows,current.labelRows,current.state).refs});
+      ticket.jobCounts={filters:entries.filter(e=>e.kind!=='LABEL'&&e.operation!=='REMOTE_ONLY'&&(d.applyPolicy==='SHEET_AUTHORITATIVE'||e.operation!=='NOOP'||e.matchedId)).length,labels:entries.filter(e=>e.kind==='LABEL'&&(d.applyPolicy==='SHEET_AUTHORITATIVE'||e.operation!=='NOOP'||e.matchedId)).length};
+      if(d.store.writeJobData)ticket.jobApproval=d.store.writeJobData(ticket.runId,{policy:d.applyPolicy,scopeMode:ticket.scopeMode,legacyCleanup:legacyCleanupApproval(entries,current.state),rows:current.rows,labelRows:current.labelRows,state:current.state,entries,keys:keys===null?entries.map(e=>e.ruleKey):keys,bindings:resolve(current.rows,current.labelRows,current.state).refs});
       if(d.state.get('cleanup'))ticket.legacyCleanupHash=digest(d.state.get('cleanup'));
       d.state.set('prepared',ticket);return {ticket:C.clone(ticket),entries:C.clone(entries),labels:C.clone(resolve(current.rows,current.labelRows,current.state).planState.labels)};
     }

@@ -4,13 +4,15 @@ var GFMJobs=(function(){
   'use strict';
   function create(d){
     const C=typeof module!=='undefined'?require('./Core'):GFMCore,L=typeof module!=='undefined'?require('./Labels'):GFMLabels;
+    const P=typeof module!=='undefined'?require('./ApplyPolicy'):GFMApplyPolicy;
+    const authoritative=a=>a?.policy===P.name,queued=(a,e)=>e.operation!=='REMOTE_ONLY'&&!!e.ruleKey&&(authoritative(a)||changed(e));
     const terminal=j=>['OK','PAUSED','CANCELLED'].includes(j.status),changed=e=>!['NOOP','REMOTE_ONLY'].includes(e.operation)||!!e.matchedId;
     const digest=v=>d.hash(C.stable(v)),config=(rs,ls)=>({filters:C.config(rs),labels:L.config(ls)}),remote=s=>digest(C.remote(s));
     const stamp=()=>new Date(d.now()).toISOString();
     function identity(j){if(j.actor!==d.actor()||j.bookId!==d.bookId)throw Error('保存済みジョブの実行者・所有者またはスプレッドシートが一致しません');}
     function head(j){j.updatedAt=d.now();d.state.set('filterJob',j);}
     function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase,diagnostic:j.diagnostic||null})});}catch(_){j.historyWarning=true;head(j);}}
-    function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,diagnostic:j.diagnostic||null,job:true});}
+    function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,diagnostic:j.diagnostic||null,policy:j.ticket.policy,verification:j.verification||null,job:true});}
     function cleanupTransfer(a){
       const saved=d.state.get('cleanup'),binding=a.legacyCleanup;
       if(!saved&&!binding)return null;
@@ -57,8 +59,9 @@ var GFMJobs=(function(){
     }
     function prepareStart(input){
       input=input||{};const active=d.state.get('filterJob');if(active&&!terminal(active))throw Error('受付済みジョブの進捗を確認してください');
-      const preparationId=d.uuid(),request=d.store.writeJobData(preparationId,{runId:input.runId||'',keys:input.keys===undefined?null:input.keys,previousRunId:input.previousRunId||'',reconfirmationFrom:input.reconfirmationFrom||null});
-      const p={runId:preparationId,preparationId,actor:d.actor(),bookId:d.bookId,status:'PREPARING',phase:'READ',request,createdAt:d.now(),updatedAt:d.now(),runs:0,previousRunId:input.previousRunId||''};
+      const previousRunId=input.previousRunId||(d.applyPolicy===P.name&&input.fresh&&active?.status==='PAUSED'?active.runId:'');
+      const preparationId=d.uuid(),request=d.store.writeJobData(preparationId,{runId:input.runId||'',keys:input.keys===undefined?null:input.keys,previousRunId,preserveScope:!input.fresh,reconfirmationFrom:input.reconfirmationFrom||null});
+      const p={runId:preparationId,preparationId,actor:d.actor(),bookId:d.bookId,status:'PREPARING',phase:'READ',request,createdAt:d.now(),updatedAt:d.now(),runs:0,previousRunId};
       d.state.remove('prepared');d.state.set('filterPreparation',p);d.scheduler.ensure();return {preparationId,status:p.status,phase:p.phase};
     }
     function prepareRemaining(runId){
@@ -128,7 +131,7 @@ var GFMJobs=(function(){
         if(d.now()-p.createdAt>15*60*1000||++p.runs>20)throw Error('準備の期限が切れました。再確認してください');
         if(p.phase==='READ'){
           const request=d.store.readJobData(p.request),extras=request.previousRunId?recoveryForPreparation(request.previousRunId):[],sync=typeof module!=='undefined'?require('./Sync'):GFMSync,a=sync.create(d).capturePreparation(request.runId,request.keys);
-          if(request.previousRunId){const previous=d.state.get('filterJob'),original=d.store.readJobData(previous.ticket.jobApproval),allowed=new Set(original.keys);if(a.keys.some(k=>!allowed.has(k)))throw Error('元の選択範囲外の依存ラベルが必要です。選択を再確認してください');}
+          if(request.previousRunId&&request.preserveScope!==false){const previous=d.state.get('filterJob'),original=d.store.readJobData(previous.ticket.jobApproval),allowed=new Set(original.keys);if(a.keys.some(k=>!allowed.has(k)))throw Error('元の選択範囲外の依存ラベルが必要です。選択を再確認してください');}
           if(extras.length){a.entries=[...a.entries.filter(e=>e.kind==='LABEL'),...extras,...a.entries.filter(e=>e.kind!=='LABEL')];a.summary.DELETE+=extras.length;}
           if(request.reconfirmationFrom){
             const original=d.store.readJobData(request.reconfirmationFrom),key=e=>e.ruleKey||e.key,before=new Map(original.entries.map(e=>[key(e),e])),after=new Map(a.entries.map(e=>[key(e),e])),definition=e=>({operation:e.operation,before:e.before,after:e.after,errors:e.errors});
@@ -152,7 +155,7 @@ var GFMJobs=(function(){
           p.phase='VERIFY_BACKUP';
         }else if(p.phase==='VERIFY_BACKUP'){
           const a=d.store.readJobData(p.approval);if(remote(d.store.readBackup(p.snapshotId))!==remote(a.state))throw Error('バックアップ読み返しが一致しません');
-          const ticket={legacyCleanupHash:a.legacyCleanup?digest(a.legacyCleanup.source):undefined,runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:p.ticket?.preparedAt??d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&changed(e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&changed(e)).length}};
+          const ticket={policy:a.policy,scopeMode:a.scopeMode,legacyCleanupHash:a.legacyCleanup?digest(a.legacyCleanup.source):undefined,runId:a.runId,fingerprint:a.fingerprint,snapshotId:p.snapshotId,summary:a.summary,preparedAt:p.ticket?.preparedAt??d.now(),jobApproval:p.approval,previousRunId:p.previousRunId||'',jobCounts:{filters:a.entries.filter(e=>e.kind!=='LABEL'&&queued(a,e)).length,labels:a.entries.filter(e=>e.kind==='LABEL'&&queued(a,e)).length}};
           if(a.selected){
             let saved;try{saved=d.store.readScope(p.snapshotId);}catch(_){if(p.scopeStarted)throw Error('選択範囲の保存途中です。取得し直してください');}
             if(saved===undefined){p.scopeStarted=true;d.state.set('filterPreparation',p);d.store.writeScope(p.snapshotId,a.keys,stamp());saved=d.store.readScope(p.snapshotId);}
@@ -177,7 +180,7 @@ var GFMJobs=(function(){
       function save(){counts();j.intentPhase=m.intent?.phase||'';j.checkpoint=d.store.writeJobData(j.runId,m);j.heartbeat=d.now();head(j);}
       function measure(code,fn){const started=d.now();try{return fn();}finally{const elapsedMs=Math.max(0,d.now()-started);j.timings[code]=(j.timings[code]||0)+elapsedMs;if(d.logger){d.logger.emit(j.runId,'TIMING',code,{elapsedMs});if(elapsedMs>=10000)d.logger.emit(j.runId,'SLOW',code,{elapsedMs});}}}
       function pause(message,uncertain){const e=Error(message);e.pause=true;e.uncertain=uncertain?1:0;throw e;}
-      function assertRemote(actual){if(remote(actual)!==remote(state))pause('実行中にGmailが変更されています。残りの差分を再確認してください');}
+      function assertRemote(actual){if(authoritative(a)){state=C.clone(actual);return;}if(remote(actual)!==remote(state))pause('実行中にGmailが変更されています。残りの差分を再確認してください');}
       function currentRows(){return measure('SHEET_READ',()=>({rs:d.store.readRows(),ls:d.store.readLabelRows()}));}
       function assertRows(){const live=currentRows();if(digest(config(live.rs,live.ls))!==digest(config(rs,ls)))pause('実行中にシートの定義が変更されています。残りの差分を再確認してください');}
       function applyPatches(patches){
@@ -207,7 +210,7 @@ var GFMJobs=(function(){
           const found=matches[0];newStateFilter(found);assertRemote(live);m.intent={phase:'CREATED',entry:e,newId:found.id};save();
         }else if(i.phase==='DELETE'){
           const old=live.filters.find(f=>f.id===e.before.id);
-          if(old){if(!C.equal(old,e.before))pause('削除対象が変更されています');assertRemote(live);assertRows();d.gmail.delete(e.before.id);return;}
+          if(old){if(!authoritative(a)&&!C.equal(old,e.before))pause('削除対象が変更されています');assertRemote(live);assertRows();d.gmail.delete(e.before.id);return;}
           state.filters=state.filters.filter(f=>f.id!==e.before.id);m.deletedFilters.push(e.before.id);assertRemote(live);m.intent={phase:'DONE',entry:e,newId:i.newId||e.keepId||''};save();
         }else if(i.phase==='LABEL'){
           const found=e.operation==='CREATE'?live.labels.filter(l=>!state.labels.some(x=>x.id===l.id)&&l.type==='user'&&l.name===e.after.name):live.labels.filter(l=>l.id===e.after.id&&l.type==='user'&&l.name===e.after.name);
@@ -225,7 +228,7 @@ var GFMJobs=(function(){
             if(patches.length)applyPatches(patches);m.refCursor+=slice.length;if(m.refCursor>=rs.length)j.phase='APPLY';save();});return;
         }
         if(j.phase==='VERIFY'){
-          measure('VERIFY',()=>{assertRows();assertRemote(d.gmail.read());finishLegacyCleanup(j,a,state,rs);});j.status='OK';j.leaseUntil=0;save();history(j,'OK');d.scheduler.clear();return;
+          measure('VERIFY',()=>{assertRows();const live=d.gmail.read();assertRemote(live);finishLegacyCleanup(j,a,state,rs);if(authoritative(a)){const result=P.report(a,rs,ls,live);m.verification=result;j.verification={status:result.status,inScope:result.inScope,outside:result.outside,remoteOnly:result.remoteOnly,at:d.now()};}});j.status='OK';j.leaseUntil=0;save();history(j,'OK');d.scheduler.clear();return;
         }
         measure('GMAIL_UPDATE',()=>{
           if(m.intent?.phase==='PATCH'){reconcilePatch();return;}
@@ -245,9 +248,11 @@ var GFMJobs=(function(){
             return;
           }
           if(m.cursor>=entries.length){j.phase='FINAL_REFERENCES';save();return;}
-          const e=C.clone(entries[m.cursor]);
+          let e=C.clone(entries[m.cursor]);
+          if(authoritative(a)){assertRows();assertRemote(d.gmail.read());e=P.entry(a,e,rs,ls,state);}
           if(e.after?.action)for(const k of ['addLabelIds','removeLabelIds'])if(e.after.action[k])e.after.action[k]=e.after.action[k].map(id=>{if(!id.startsWith('gfm-label:'))return id;const row=ls.find(r=>L.virtualId(r.LabelKey)===id);if(!row?.GmailLabelId)pause('依存するラベルが未確認です');return row.GmailLabelId;});
           assertRemote(d.gmail.read());
+          if(authoritative(a)&&e.operation==='NOOP'&&!e.matchedId){m.cursor++;j.uncertain=0;save();return;}
           if(e.kind==='LABEL'){
             if(e.operation==='NOOP'){m.intent={phase:'DONE',entry:e,newId:e.matchedId||e.after.id};save();return;}
             m.intent={phase:'LABEL',entry:e};save();assertRows();if(e.operation==='CREATE')d.gmail.createLabel(e.after.name);else d.gmail.renameLabel(e.after.id,e.after.name);return;
@@ -271,7 +276,8 @@ var GFMJobs=(function(){
       rs.forEach(r=>Object.assign(r,m.filterPatches[r.RuleKey]||{}));ls.forEach(r=>Object.assign(r,m.labelPatches[r.LabelKey]||{}));
       state.filters=state.filters.filter(f=>!m.deletedFilters.includes(f.id)).concat(C.clone(m.createdFilters));
       Object.values(m.labelChanges).forEach(l=>{const i=state.labels.findIndex(x=>x.id===l.id);if(i<0)state.labels.push(l);else state.labels[i]=l;});
-      entries=a.entries.filter(e=>changed(e));const labelEntries=entries.filter(e=>e.kind==='LABEL');
+      if((a.policy||'')!==(j.ticket.policy||''))throw Error('approval policy');
+      entries=a.entries.filter(e=>queued(a,e));const labelEntries=entries.filter(e=>e.kind==='LABEL');
       j.filters.planned=entries.length-labelEntries.length;j.labels.planned=labelEntries.length;
           if(m.cursor>entries.length)throw Error('cursor');loaded=true;
         }catch(_){const e=Error('保存済みジョブの形式が破損しています。検証してから再確認してください');e.code='GFM_DATA_INTEGRITY';throw e;}
@@ -296,7 +302,8 @@ var GFMJobs=(function(){
         j.status=err.pause||invalid||safe&&!safe.retryable||j.attempts>=5?'PAUSED':'WAITING';j.error=safe?'参照情報の更新に失敗しました（'+safe.stage+' / '+safe.code+'）。'+(safe.retryable&&j.attempts<5?'保存済みの更新意図を照合して再試行します。':'状態を確認して残りの差分を再確認してください。'):invalid?'保存済みジョブの検証に失敗しました。破損したデータを再適用せず確認してください':err.pause?err.message:j.attempts>=5?'保存済みジョブの読取・実行障害が続いたため停止しました。状態を確認してください':'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||j.uncertain||(['CREATE','DELETE','LABEL'].includes(m?.intent?.phase||j.intentPhase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
       return view(j);
     });}
-    return {prepareRemaining,prepareStart,prepareStatus,accept,status,run};
+    function verification(runId){const j=d.state.get('filterJob');if(!j||j.runId!==runId)throw Error('この実行ジョブは見つかりません');identity(j);if(j.status!=='OK'||!j.verification)throw Error('反映後の照合結果はまだありません');const m=d.store.readJobData(j.checkpoint);if(!m.verification||!Array.isArray(m.verification.entries))throw Error('照合結果を検証できません');return {runId,verification:C.clone(j.verification),entries:C.clone(m.verification.entries)};}
+    return {prepareRemaining,prepareStart,prepareStatus,accept,status,run,verification};
   }
   return {create};
 })();

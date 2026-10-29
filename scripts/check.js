@@ -7,7 +7,7 @@ assert.equal(manifest.runtimeVersion,'V8');assert.equal(manifest.timeZone,'Asia/
 assert.deepEqual(manifest.dependencies.enabledAdvancedServices,[{userSymbol:'Gmail',version:'v1',serviceId:'gmail'},{userSymbol:'Sheets',version:'v4',serviceId:'sheets'}]);
 const suffixes=['gmail.settings.basic','gmail.labels','gmail.modify','spreadsheets','script.container.ui','script.scriptapp','userinfo.email'];
 assert.deepEqual(manifest.oauthScopes.slice().sort(),suffixes.map(s=>'https://www.googleapis.com/auth/'+s).sort());
-const sources=['Core','Labels','Sync','Sheets','Gmail','Messages','Jobs','Logging','Runtime','Menu','Web'].map(s=>'src/'+s+'.js');
+const sources=['Core','Labels','Sync','Sheets','Gmail','Messages','ApplyPolicy','Jobs','Logging','Runtime','Menu','Web'].map(s=>'src/'+s+'.js');
 const context=vm.createContext({});
 for(const source of sources.slice().reverse()){
   const code=read(source);new vm.Script(code,{filename:source}).runInContext(context);
