@@ -13,11 +13,11 @@ var GFMWeb = (function () {
       if(!owned(c)||!token||c.token!==token)return validity(null,'SUPERSEDED');
       if(kind==='webApproval'&&!same(c.ticket,d.state.get('prepared'))||kind==='webMessageApproval'&&d.state.get('messageApproval')&&!same(c.ticket,d.state.get('messageApproval')))return validity(c,'SUPERSEDED');
       if(c.config&&c.config!==configHash())return validity(c,'CONFIG_CHANGED');
-      if(c.remote&&c.remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return validity(c,'GMAIL_CHANGED');
+      if(!(kind==='webApproval'&&c.ticket.policy==='SHEET_AUTHORITATIVE')&&c.remote&&c.remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return validity(c,'GMAIL_CHANGED');
       return validity(c,now()>=expiry(c)?'EXPIRED':'VALID');
     }
     function confirmation(kind,ticket,remote){
-      const at=now(),token=d.uuid(),c={token,ticket,at,expiresAt:Math.min(at+approvalTTL,...[ticket.preparedAt,ticket.at].filter(Number.isFinite).map(t=>t+approvalTTL)),actor:d.actor(),bookId:d.bookId,config:configHash(),remote:remote||d.hash(C.stable(C.remote(d.gmail.read())))};
+      const at=now(),token=d.uuid(),c={token,ticket,at,expiresAt:Math.min(at+approvalTTL,...[ticket.preparedAt,ticket.at].filter(Number.isFinite).map(t=>t+approvalTTL)),actor:d.actor(),bookId:d.bookId,config:configHash(),remote:kind==='webApproval'&&ticket.policy==='SHEET_AUTHORITATIVE'?undefined:remote||d.hash(C.stable(C.remote(d.gmail.read())))};
       d.state.set(kind,c);return {token,confirmation:validity(c,now()>=expiry(c)?'EXPIRED':'VALID')};
     }
     function checked(kind,token){const status=confirmationStatus(kind,token);if(!status.valid){const error=Error(status.message);error.confirmation=status;throw error;}return d.state.get(kind);}
@@ -113,7 +113,7 @@ var GFMWeb = (function () {
         if(configHash(captured.rows,captured.labelRows)!==configHash())throw Error('確認後に設定が変更されています。差分を再取得してください');
         const old=d.state.get('webApproval');
         const remote=d.hash(C.stable(C.remote(captured.state)));
-        if(!old&&remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'GMAIL_CHANGED')};
+        if(p.ticket.policy!=='SHEET_AUTHORITATIVE'&&!old&&remote!==d.hash(C.stable(C.remote(d.gmail.read()))))return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'GMAIL_CHANGED')};
         if(old&&old.ticket.runId===p.ticket.runId)return {...p,...p.ticket,token:old.token,confirmation:confirmationStatus('webApproval',old.token)};
         if(now()>=p.ticket.preparedAt+approvalTTL)return {...p,...p.ticket,token:'',confirmation:validity({ticket:p.ticket,at:p.ticket.preparedAt},'EXPIRED')};
         return {...p,...p.ticket,...confirmation('webApproval',p.ticket,remote)};
@@ -240,10 +240,11 @@ var GFMWeb = (function () {
       if(action==='viewUpdate')return d.withLock(()=>updateView(input));
       if(action==='boot'){const last=d.state.get('webOutcome');return {navigation:(()=>{const n=navigation();return n?{spreadsheet:n.spreadsheet,sheets:n.sheets}:null;})(),filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return owned(p)?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt,_view:preparationLocator(p.preparationId)}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
       if(action==='filterJobStatus'&&d.jobs)return d.jobs.status(input.runId);
+      if(action==='filterJobVerification'&&d.jobs)return withNavigation(d.jobs.verification(input.runId));
       if(action==='prepareStatus'&&d.jobs)return readyPreparation(input.preparationId);
       return d.withLock(()=>tracked(action,input,()=>{
         if(action==='prepareRemaining'&&d.jobs){d.state.remove('webApproval');return d.jobs.prepareRemaining(input.runId);}
-        if(action==='prepareStart'&&d.jobs){d.state.remove('webApproval');return d.jobs.prepareStart(input);}
+        if(action==='prepareStart'&&d.jobs){d.state.remove('webApproval');return d.jobs.prepareStart({...input,fresh:!input.previousRunId});}
 
         if(action==='messagesList')return d.messages.list();
         if(action==='messagesStart')return d.messages.start(input.keys===undefined?null:input.keys,input._requestId);
