@@ -8,6 +8,19 @@ var GFMSheets = (function () {
     History:['RunId','TimestampTokyo','Actor','Command','RuleKey','BeforeId','AfterId','Result','Error','SnapshotId','Verification','Risk'],
     Backup:['SnapshotId','CapturedAt','Kind','GmailFilterId','Part','Parts','Json','Hash']
   };}
+  const referenceMessages={ANCHOR_INVALID:'参照更新の行メタデータが不明または重複しています',INPUT_INVALID:'参照更新の入力・更新列またはセル長が不正です（25行以内）',CONFIG_CHANGED:'実行中にシートの定義が変更されています',WRITE_MISMATCH:'一括メタデータ更新の件数が一致しません',READBACK_MISMATCH:'一括更新の読み返しが一致しません',SERVICE_UNAVAILABLE:'参照更新のサービスが一時的に利用できません',SERVICE_REJECTED:'参照更新がサービスに拒否されました。権限・設定を確認してください',SERVICE_ERROR:'参照更新のサービス処理に失敗しました'};
+  function referenceDiagnostic(error){
+    const r=error?.reference;
+    if(error?.code!=='GFM_REFERENCE_UPDATE'||!r||!Object.prototype.hasOwnProperty.call(referenceMessages,r.code)||!['PRECHECK','WRITE','READBACK'].includes(r.stage))return null;
+    const result={code:r.code,stage:r.stage,count:Number.isSafeInteger(r.count)?Math.max(0,Math.min(25,r.count)):0,retryable:r.code==='SERVICE_UNAVAILABLE'};
+    if([400,401,403,404,408,409,429,500,502,503,504].includes(r.serviceStatus))result.serviceStatus=r.serviceStatus;
+    return result;
+  }
+  function referenceFailure(error,stage,count){
+    const message=String(error?.message||''),candidate=Number(error?.code||error?.details?.code),status=[400,401,403,404,408,409,429,500,502,503,504].includes(candidate)?candidate:undefined;
+    let code=/行メタデータ/.test(message)?'ANCHOR_INVALID':/更新キー|更新する行のキー|更新列またはセル長|25行以内/.test(message)?'INPUT_INVALID':/シート.*変更/.test(message)?'CONFIG_CHANGED':/更新の件数/.test(message)?'WRITE_MISMATCH':/読み返し/.test(message)?'READBACK_MISMATCH':status&&[400,401,403,404,409].includes(status)?'SERVICE_REJECTED':status||/service (?:temporarily )?unavailable|response lost|temporarily unavailable|timed out|timeout|internal error|rate limit/i.test(message)?'SERVICE_UNAVAILABLE':'SERVICE_ERROR';
+    const e=Error(referenceMessages[code]);e.code='GFM_REFERENCE_UPDATE';e.reference={code,stage,count,serviceStatus:status};e.reference=referenceDiagnostic(e);return e;
+  }
   function create(d) {
     const C=core(),schemas=schemasValue(),limit=40000;
     const stringify=v=>v===undefined||v===null?'':typeof v==='boolean'?(v?'TRUE':'FALSE'):typeof v==='object'?JSON.stringify(v):String(v);
@@ -83,7 +96,18 @@ var GFMSheets = (function () {
     }
     function rowAnchors(s,metadata){
       const sheetId=s.getSheetId(),response=d.api.Spreadsheets.DeveloperMetadata.search({dataFilters:[{developerMetadataLookup:{metadataKey:metadata,metadataLocation:{sheetId},locationMatchingStrategy:'INTERSECTING_LOCATION'}}]},d.book.getId());
-      return (response.matchedDeveloperMetadata||[]).map(m=>m.developerMetadata).filter(m=>m.location?.dimensionRange?.sheetId===sheetId).map(m=>({value:m.metadataValue,id:m.metadataId,row:m.location.dimensionRange.startIndex+1}));
+      // Advanced Sheets omits scalar defaults, including sheetId: 0. Old
+      // versions consequently missed these anchors and re-created identical
+      // metadata on every initialization. Coalesce only the same token/row;
+      // readRows and rowAnchorIds still reject conflicting row associations.
+      const unique=new Map();
+      for(const match of response.matchedDeveloperMetadata||[]){
+        const m=match.developerMetadata,r=m?.location?.dimensionRange;
+        if(!r||(r.sheetId??0)!==sheetId||r.dimension!=='ROWS'||!Number.isSafeInteger(r.startIndex)||r.endIndex!==r.startIndex+1||!Number.isSafeInteger(m.metadataId)||m.metadataId<=0)continue;
+        const anchor={value:m.metadataValue,id:m.metadataId,row:r.startIndex+1},key=anchor.row+':'+anchor.value,old=unique.get(key);
+        if(!old||anchor.id<old.id)unique.set(key,anchor);
+      }
+      return [...unique.values()];
     }
     function rowAnchorIds(name,metadata){
       const ids=new Map();for(const m of rowAnchors(sheet(name),metadata)){if(ids.has(m.value))throw Error(name+'の行メタデータが重複しています');if(!Number.isSafeInteger(m.id))throw Error(name+'の行メタデータIDが不明です');ids.set(m.value,m.id);}return ids;
@@ -127,6 +151,7 @@ var GFMSheets = (function () {
       atomicFields('Filters','GFM',key,patch);const found=readRows().find(r=>r.RuleKey===key);if(!found||Object.keys(patch).some(k=>String(found[k])!==patch[k]))throw Error('参照名の読み返しが一致しません');
     }
     function batchJobPatches(patches,expectedRows,expectedLabels){
+      let stage='PRECHECK';try{
       if(!Array.isArray(patches)||patches.length>25)throw Error('参照・メタデータ更新は25行以内です');
       const L=typeof module!=='undefined'?require('./Labels'):GFMLabels;
       const before={Filters:readRows(),Labels:readLabelRows()},expected={Filters:C.clone(expectedRows),Labels:C.clone(expectedLabels)},after=C.clone(expected);
@@ -152,11 +177,16 @@ var GFMSheets = (function () {
       const cfg=t=>C.stable({filters:C.config(t.Filters),labels:L.config(t.Labels)});
       if(cfg(before)!==cfg(expected))throw Error('実行中にシートの定義が変更されています');
       if(!data.length)return;
+      stage='WRITE';
       const response=d.api.Spreadsheets.Values.batchUpdateByDataFilter({valueInputOption:'RAW',data},d.book.getId());
       if(!response||response.totalUpdatedRows!==patches.length)throw Error('一括メタデータ更新の件数が一致しません');
-      // No flush per row: the Values API completes its batch before readback.
+      // Invalidate SpreadsheetApp cached reads after the advanced API write.
+      // Flush once per batch, never once per row.
+      d.app.flush();
+      stage='READBACK';
       const actual={Filters:readRows(),Labels:readLabelRows()};if(cfg(actual)!==cfg(after))throw Error('一括更新の読み返しが一致しません');
       for(const p of patches){const name=p.kind==='LABEL'?'Labels':'Filters',field=p.kind==='LABEL'?'LabelKey':'RuleKey',r=actual[name].find(r=>r[field]===p.key);if(!r||Object.keys(p.values).some(k=>stringify(r[k])!==stringify(p.values[k])))throw Error('一括更新のシステム列読み返しが一致しません');}
+      }catch(e){throw referenceFailure(e,stage,Array.isArray(patches)?patches.length:0);}
     }
     function chunkRows(id,at,kind,filterId,text) {
       const parts=Math.max(1,Math.ceil(text.length/limit)),hash=d.hash(text);
@@ -335,6 +365,6 @@ var GFMSheets = (function () {
     return {configurationLocations,writeWebView,readWebView,removeWebView,batchJobPatches,writeJobData:writeMessageData,readJobData:readMessageData,writeMessageData,readMessageData,setup,ensureLabelSchema,readLabelRows,appendLabelRows,updateLabelRow,ensureLabelKeys,setFilterLabel,readRows,appendRows,updateRow,readHistory,ensureKeys,writeDiff,history,backup,writeScope,readScope,readBackup:id=>decodeSnapshot(id,true),open:name=>sheet(name).activate()};
   }
   // GAS file evaluation order is unspecified: resolve Core only when used.
-  return {create,get schemas(){return schemasValue();}};
+  return {create,referenceDiagnostic,referenceFailure,get schemas(){return schemasValue();}};
 })();
 if(typeof module!=='undefined')module.exports=GFMSheets;

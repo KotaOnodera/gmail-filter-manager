@@ -9,8 +9,8 @@ var GFMJobs=(function(){
     const stamp=()=>new Date(d.now()).toISOString();
     function identity(j){if(j.actor!==d.actor()||j.bookId!==d.bookId)throw Error('保存済みジョブの実行者・所有者またはスプレッドシートが一致しません');}
     function head(j){j.updatedAt=d.now();d.state.set('filterJob',j);}
-    function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase})});}catch(_){j.historyWarning=true;head(j);}}
-    function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,job:true});}
+    function history(j,result){try{d.store.history({runId:j.runId,at:stamp(),actor:j.actor,command:'FILTER_JOB',result,error:j.error||'',snapshotId:j.ticket.snapshotId,verification:JSON.stringify({filters:j.filters,labels:j.labels,phase:j.phase,diagnostic:j.diagnostic||null})});}catch(_){j.historyWarning=true;head(j);}}
+    function view(j){return C.clone({runId:j.runId,preparationId:j.ticket.jobApproval?.runId||'',status:j.status,phase:j.phase,completed:j.filters.completed+j.labels.completed,filters:j.filters,labels:j.labels,remaining:j.filters.remaining+j.labels.remaining,uncertain:j.uncertain||(['CREATE','DELETE','LABEL'].includes(j.intentPhase)?1:0),error:j.error||'',updatedAt:j.updatedAt,heartbeat:j.heartbeat,leaseUntil:j.leaseUntil,recovered:!!j.recovered,timings:j.timings,diagnostic:j.diagnostic||null,job:true});}
     function cleanupTransfer(a){
       const saved=d.state.get('cleanup'),binding=a.legacyCleanup;
       if(!saved&&!binding)return null;
@@ -287,7 +287,13 @@ var GFMJobs=(function(){
           }else step();
         }
         if(!terminal(j)){j.status='WAITING';j.leaseUntil=0;j.attempts=0;save();}
-      }catch(err){j.attempts++;const invalid=err.code==='GFM_DATA_INTEGRITY';j.status=err.pause||invalid||j.attempts>=5?'PAUSED':'WAITING';j.error=invalid?'保存済みジョブの検証に失敗しました。破損したデータを再適用せず確認してください':err.pause?err.message:j.attempts>=5?'保存済みジョブの読取・実行障害が続いたため停止しました。状態を確認してください':'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||j.uncertain||(['CREATE','DELETE','LABEL'].includes(m?.intent?.phase||j.intentPhase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
+      }catch(err){j.attempts++;const Sheets=typeof module!=='undefined'?require('./Sheets'):GFMSheets,invalid=err.code==='GFM_DATA_INTEGRITY';
+        // assertRows and checkpoint recovery can fail before the adapter's write
+        // boundary. Apply the same safe classification to reference prechecks.
+        if(!invalid&&err.code!=='GFM_REFERENCE_UPDATE'&&(['REFERENCES','FINAL_REFERENCES'].includes(j.phase)||m?.intent?.phase==='PATCH'))err=Sheets.referenceFailure(err,'PRECHECK',m?.intent?.patches?.length||0);
+        const safe=Sheets.referenceDiagnostic(err);
+        if(safe)j.diagnostic={...safe,operation:'REFERENCE_UPDATE',at:d.now(),attempt:j.attempts};
+        j.status=err.pause||invalid||safe&&!safe.retryable||j.attempts>=5?'PAUSED':'WAITING';j.error=safe?'参照情報の更新に失敗しました（'+safe.stage+' / '+safe.code+'）。'+(safe.retryable&&j.attempts<5?'保存済みの更新意図を照合して再試行します。':'状態を確認して残りの差分を再確認してください。'):invalid?'保存済みジョブの検証に失敗しました。破損したデータを再適用せず確認してください':err.pause?err.message:j.attempts>=5?'保存済みジョブの読取・実行障害が続いたため停止しました。状態を確認してください':'処理を中断しました。保存済みの実行意図を次回照合します';j.uncertain=err.uncertain||j.uncertain||(['CREATE','DELETE','LABEL'].includes(m?.intent?.phase||j.intentPhase)?1:0);j.leaseUntil=0;counts();head(j);history(j,j.status);if(d.logger)d.logger.emit(j.runId,err.pause?'REVIEW_REQUIRED':'RECOVERY',j.phase,{});if(terminal(j))d.scheduler.clear();}
       return view(j);
     });}
     return {prepareRemaining,prepareStart,prepareStatus,accept,status,run};

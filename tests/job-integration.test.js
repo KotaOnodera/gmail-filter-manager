@@ -48,5 +48,12 @@ test('F3 25 patches over 1200 metadata anchors use JSON maps without service acc
 });
 test('F3 single metadata patch also uses JSON metadata IDs and duplicate anchors fail closed',()=>{
  const f=fakeSheets(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows([C.importFilter(base(),labels,key)]);f.events.length=0;store.updateRow(key,{Result:'confirmed'});assert.equal(f.events.filter(e=>e==='metadataGetId'||e==='metadataGetValue'||e==='metadataFind').length,0);
- const s=f.sheets.get('Filters');s.getRange('2:2').addDeveloperMetadata('GFM',s.metadata[0].value);assert.throws(()=>store.batchJobPatches([{key,values:{Result:'bad'}}],store.readRows(),[]),/重複/);assert.equal(store.readRows()[0].Result,'confirmed');
+ const s=f.sheets.get('Filters');store.appendRows([C.importFilter(base(),labels,require('node:crypto').randomUUID())]);s.getRange('3:3').addDeveloperMetadata('GFM',s.metadata[0].value);assert.throws(()=>store.batchJobPatches([{key,values:{Result:'bad'}}],[{...C.importFilter(base(),labels,key),Result:'confirmed'}],[]),/不一致|重複/);assert.equal(s.values[1][C.columns.indexOf('Result')],'confirmed');
+});
+test('reference job precheck classifies real row-metadata conflict before any Gmail write',()=>{
+ const f=fakeSheets(),h=harness(),store=S.create({...f,hash,uuid:()=>require('node:crypto').randomUUID()});store.setup();store.appendRows(h.rows);f.sheets.get('Filters').values[1][C.columns.indexOf('Subject')]='approved';
+ const deps={...h.deps,store,bookId:'book',withLock:fn=>fn(),scheduler:{ensure(){},exists:()=>true,clear(){}}},jobs=J.create(deps),sync=Sync.create(deps);sync.preview();const ticket=sync.prepare();jobs.accept(ticket,true);
+ jobs.run();jobs.run();jobs.run();assert.equal(jobs.status().phase,'REFERENCES');
+ f.sheets.get('Filters').getRange('2:2').addDeveloperMetadata('GFM','conflicting-token');
+ const result=jobs.run();assert.equal(result.status,'PAUSED');assert.equal(result.diagnostic?.stage,'PRECHECK');assert.equal(result.diagnostic?.code,'ANCHOR_INVALID');assert.equal(result.diagnostic?.attempt,1);assert.equal(h.writes.length,0);
 });
