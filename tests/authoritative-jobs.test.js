@@ -47,3 +47,19 @@ test('fresh ALL confirmation may choose a new scope after paused intent recovery
 test('post-apply differences are recorded in history and remain readable after a later job',()=>{
  const h=fixture({rename:true,selected:['label:'+lk]}),rename=h.deps.gmail.renameLabel;h.deps.gmail.renameLabel=(id,name)=>{const r=rename(id,name);h.data.filters[0].action.removeLabelIds.push('SPAM');return r;};const first=h.drain();assert.equal(h.history.at(-1).result,'OK_WITH_DIFFERENCES');assert.equal(JSON.parse(h.history.at(-1).verification).verification.outside,1);const saved=h.jobs.verification(first.runId);h.sync.preview();h.jobs.accept(h.sync.prepare(),true);assert.equal(h.drain().status,'OK');assert.deepEqual(h.jobs.verification(first.runId),saved);h.deps.actor=()=> 'foreign';assert.throws(()=>h.jobs.verification(first.runId),/所有者|実行者/);
 });
+for(const recovery of ['worker','fresh preparation'])test('pre-intent external equivalent cannot be adopted after failed create via '+recovery,()=>{
+ const h=fixture({changed:true});h.toApply();const external={id:'external-equivalent',criteria:{from:'sender@example.com',subject:'approved'},action:{addLabelIds:['Label_1'],removeLabelIds:['INBOX']}};h.data.filters.push(external);h.faults.create=true;
+ if(recovery==='worker'){
+  const v=h.drain();assert.equal(v.status,'PAUSED');assert.equal(v.uncertain,1);
+ }else{
+  h.jobs.run();h.props.filterJob.status='PAUSED';h.props.filterJob.leaseUntil=0;const p=h.jobs.prepareStart({fresh:true});for(let n=0;n<4;n++)h.jobs.run();assert.equal(h.jobs.prepareStatus(p.preparationId).status,'PAUSED');
+ }
+ assert.ok(h.data.filters.some(f=>f.id==='old'));assert.equal(h.rows[0].GmailFilterId,'old');assert.equal(h.writes.filter(w=>['create','delete'].includes(w[0])).length,0);
+});
+for(const recovery of ['worker','fresh preparation'])test('response-lost create excludes pre-intent external equivalent via '+recovery,()=>{
+ const h=fixture({changed:true});h.toApply();h.data.filters.push({id:'external-equivalent',criteria:{from:'sender@example.com',subject:'approved'},action:{addLabelIds:['Label_1'],removeLabelIds:['INBOX']}});h.faults.afterCreate=true;
+ if(recovery==='worker')assert.equal(h.drain().status,'OK');else{
+  h.jobs.run();h.props.filterJob.status='PAUSED';h.props.filterJob.leaseUntil=0;const p=h.jobs.prepareStart({fresh:true});for(let n=0;n<4;n++)h.jobs.run();const prepared=h.jobs.prepareStatus(p.preparationId);assert.equal(prepared.status,'READY');h.jobs.accept(prepared.ticket,true);assert.equal(h.drain().status,'OK');
+ }
+ assert.ok(h.data.filters.some(f=>f.id==='external-equivalent'));assert.notEqual(h.rows[0].GmailFilterId,'external-equivalent');assert.equal(h.writes.filter(w=>w[0]==='create').length,1);assert.equal(h.writes.filter(w=>w[0]==='delete').length,1);assert.equal(h.jobs.status().verification.remoteOnly,1);
+});

@@ -95,7 +95,7 @@ var GFMJobs=(function(){
       }else{
         let id=intent.newId||e.matchedId||'';
         if(['CREATE','CREATED'].includes(intent.phase)||['CREATE','REPLACE'].includes(e.operation)){
-          const known=new Set(a.state.filters.map(f=>f.id).concat((m.createdFilters||[]).filter(f=>f.id!==id).map(f=>f.id)));
+          const known=new Set(intent.knownFilterIds||a.state.filters.map(f=>f.id).concat((m.createdFilters||[]).filter(f=>f.id!==id).map(f=>f.id)));
           const candidates=live.filters.filter(f=>id?f.id===id&&!known.has(f.id)&&C.equal(f,e.after):!known.has(f.id)&&C.equal(f,e.after));
           if(candidates.length!==1)throw Error('作成結果が不明です。自動再作成せず照合が必要です');id=candidates[0].id;
           const old=e.before&&live.filters.find(f=>f.id===e.before.id);
@@ -205,9 +205,9 @@ var GFMJobs=(function(){
       function reconcileApi(){
         const i=m.intent,e=i.entry,live=d.gmail.read();
         if(i.phase==='CREATE'){
-          const known=new Set(state.filters.map(f=>f.id)),matches=live.filters.filter(f=>!known.has(f.id)&&C.equal(f,e.after));
+          const known=new Set(i.knownFilterIds||state.filters.map(f=>f.id)),matches=live.filters.filter(f=>!known.has(f.id)&&C.equal(f,e.after));
           if(matches.length!==1)pause('作成結果が不明です（候補'+matches.length+'件）。自動再作成せず照合が必要です',true);
-          const found=matches[0];newStateFilter(found);assertRemote(live);m.intent={phase:'CREATED',entry:e,newId:found.id};save();
+          const found=matches[0];newStateFilter(found);assertRemote(live);m.intent={phase:'CREATED',entry:e,newId:found.id,knownFilterIds:i.knownFilterIds};save();
         }else if(i.phase==='DELETE'){
           const old=live.filters.find(f=>f.id===e.before.id);
           if(old){if(!authoritative(a)&&!C.equal(old,e.before))pause('削除対象が変更されています');assertRemote(live);assertRows();d.gmail.delete(e.before.id);return;}
@@ -258,7 +258,8 @@ var GFMJobs=(function(){
             m.intent={phase:'LABEL',entry:e};save();assertRows();if(e.operation==='CREATE')d.gmail.createLabel(e.after.name);else d.gmail.renameLabel(e.after.id,e.after.name);return;
           }
           if(e.operation==='CREATE'||e.operation==='REPLACE'){
-            if(state.filters.length>=1000)pause('フィルター上限1000件のため停止しました');m.intent={phase:'CREATE',entry:e};save();assertRows();d.gmail.create(e.after);return;
+            // Keep the current pre-create ID universe across workers and fresh recovery.
+            if(state.filters.length>=1000)pause('フィルター上限1000件のため停止しました');m.intent={phase:'CREATE',entry:e,knownFilterIds:state.filters.map(f=>f.id)};save();assertRows();d.gmail.create(e.after);return;
           }
           if(e.operation==='DELETE'){if(e.jobCleanup||e.cleanup){const keep=state.filters.find(f=>f.id===e.keepId);if(!keep)pause('置換後の維持対象が見つかりません');}m.intent={phase:'DELETE',entry:e,newId:e.keepId||''};save();assertRows();d.gmail.delete(e.before.id);return;}
           m.intent={phase:'DONE',entry:e,newId:e.matchedId||e.before?.id||''};save();

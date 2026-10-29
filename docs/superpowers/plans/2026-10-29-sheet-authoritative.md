@@ -24,21 +24,21 @@
 ### Task 1: Authoritative execution and persisted verification
 **Files:** src/ApplyPolicy.js (new pure planning/report), src/Sync.js, src/Jobs.js, src/Runtime.js, scripts/build.js; tests/authoritative-jobs.test.js (new), integration tests as needed.
 **Interfaces:** Approvals/tickets gain policy, scopeMode. ApplyPolicy exports name, plan(rows,labelRows,live,keys), entry(approval,source,rows,labelRows,live), report(approval,rows,labelRows,live). Jobs.view exposes policy and verification summary; jobs.verification(runId) returns persisted entries.
-- [ ] Write failing real Jobs tests for ALL NOOP drift, selected/outside drift, pending LABEL plus SPAM change, current-ID edit/disappearance/delete, response loss, late final drift, sheet edits, legacy strict, fresh vs remaining scope and large report/reload.
-- [ ] Run focused test expecting failures for missing policy/behavior.
-- [ ] Implement pure planner, policy binding/validation, current-entry replan, policy-aware observation/reconciliation, final report persistence and read API.
-- [ ] Run focused, full npm test, npm run check/build; verify actual stopped-data replay without mutations. Commit.
+- [x] Write failing real Jobs tests for ALL NOOP drift, selected/outside drift, pending LABEL plus SPAM change, current-ID edit/disappearance/delete, response loss, late final drift, sheet edits, legacy strict, fresh vs remaining scope and large report/reload.
+- [x] Run focused test expecting failures for missing policy/behavior.
+- [x] Implement pure planner, policy binding/validation, current-entry replan, policy-aware observation/reconciliation, final report persistence and read API.
+- [x] Run focused, full npm test, npm run check/build; verify actual stopped-data replay without mutations. Commit.
 
 ### Task 2: Confirmation and completion UI
 **Files:** src/Web.js, Client.html, src/Menu.js, tests/authoritative-web.test.js (new), tests/client-authoritative.test.js (new), docs/background-jobs.md, README.md if applicable.
 **Interfaces:** Web filterJobVerification returns jobs.verification with existing navigation decoration. Only SHEET_AUTHORITATIVE webApproval skips remote-hash invalidation. Client reads verification summary and fetches persisted entries on demand.
-- [ ] Add failing confirmation tests for Gmail drift accepted vs sheet/expiry/supersession rejected; legacy/import/messages remain strict; confirmation copy includes overwrite policy.
-- [ ] Add actual Client tests for completed-with-differences, readable report and no automatic apply resend; manual reload and stale/failed report read.
-- [ ] Implement routes/copy and discrepancy detail cards, persist bounds, docs. Run focused/full/check/build; commit.
+- [x] Add failing confirmation tests for Gmail drift accepted vs sheet/expiry/supersession rejected; legacy/import/messages remain strict; confirmation copy includes overwrite policy.
+- [x] Add actual Client tests for completed-with-differences, readable report and no automatic apply resend; manual reload and stale/failed report read.
+- [x] Implement routes/copy and discrepancy detail cards, persist bounds, docs. Run focused/full/check/build; commit.
 
 ### Task 3: Review, integration and deployment
 **Files:** ignored ledger/evidence; final changes only as reviewed.
-- [ ] Package whole-branch independent review, rule on all findings, material fixes RED→GREEN and full suite/check/build.
+- [x] Package whole-branch independent review, rule on all findings, material fixes RED→GREEN and full suite/check/build.
 - [ ] PR Closes #24; wait CI, merge, verify final main and CI.
 - [ ] Push allowlisted installer, update existing runtime, exact source readback; immutable GAS version and existing private deployment; live read-only UI verification.
 - [ ] Archive report/evidence; remove created worktree and merged branch. Issue closed; final results and limitations reported.
