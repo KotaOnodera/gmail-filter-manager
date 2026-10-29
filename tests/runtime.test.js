@@ -20,3 +20,7 @@ test('runtime refuses non-owner and releases its shared lock on failure',()=>{
   const runtime=R.create({...d,email:'owner@example.com',props:props(),store:{},gmail:{},hash:x=>x,uuid:()=>'',lock:{tryLock(){acquired++;return true;},releaseLock(){released++;}}});
   assert.throws(()=>runtime.withLock(()=>{throw new Error('fault');}),/fault/);assert.equal(acquired,1);assert.equal(released,1);
 });
+test('lock contention has a safe machine-readable busy code',()=>{
+ const runtime=R.create({book:{getOwner:()=>({getEmail:()=> 'owner@example.com'})},email:'owner@example.com',props:props(),store:{},gmail:{},hash:x=>x,uuid:()=>'',lock:{tryLock:()=>false,releaseLock(){throw Error('not acquired');}}});
+ assert.throws(()=>runtime.withLock(()=>{}),e=>e.code==='GFM_BUSY');
+});

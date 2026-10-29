@@ -235,7 +235,7 @@ var GFMWeb = (function () {
       // Read only small owner-scoped checkpoints; status must remain available while a write owns the lock.
       if(action==='resume')return resume(input.requestId);
       if(action==='viewGet')return loadView(input);
-      if(action==='confirmationStatus')return d.withLock(()=>confirmationStatus(input.kind,input.token));
+      if(action==='confirmationStatus'){try{return d.withLock(()=>confirmationStatus(input.kind,input.token));}catch(e){if(e.code!=='GFM_BUSY')throw e;return {valid:false,reason:'BUSY',message:'別の処理が実行中です。確認状態を再取得します。',serverNow:now()};}}
       if(action==='reconfirm')return d.withLock(()=>tracked(action,input,()=>reconfirm(input)));
       if(action==='viewUpdate')return d.withLock(()=>updateView(input));
       if(action==='boot'){const last=d.state.get('webOutcome');return {navigation:(()=>{const n=navigation();return n?{spreadsheet:n.spreadsheet,sheets:n.sheets}:null;})(),filterJob:d.jobs&&d.state.get('filterJob')?d.jobs.status():null,filterPreparation:(()=>{const p=d.state.get('filterPreparation');return owned(p)?{preparationId:p.preparationId,previousRunId:p.previousRunId||'',runId:p.ticket?.runId||'',status:p.status,phase:p.phase,createdAt:p.createdAt,updatedAt:p.updatedAt,_view:preparationLocator(p.preparationId)}:null;})(),messageJob:d.state.get('messageJob'),unseenOutcome:last&&!last.acknowledged&&last.actor===d.actor()&&last.bookId===d.bookId?last.result:null};}
