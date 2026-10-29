@@ -116,3 +116,9 @@ test('remaining confirmation refuses an intervening label ID association edit',(
  h.deps.gmail.createLabel=name=>{const result=create(name);h.labelRows[0].Name='edited label';return result;};assert.equal(h.drain().status,'PAUSED');
  h.labelRows[0].GmailLabelId='user-chosen-label';const before=h.writes.length,p=h.jobs.prepareRemaining(ticket.runId);h.jobs.run();assert.equal(h.jobs.prepareStatus(p.preparationId).status,'PAUSED');assert.equal(h.labelRows[0].GmailLabelId,'user-chosen-label');assert.equal(h.writes.length,before);
 });
+for(const retryable of [false,true])test('reference '+(retryable?'transient':'permanent')+' failure exposes bounded diagnostic without raw error',()=>{
+ const lk='22222222-2222-4222-8222-222222222222',h=fixture({labelRows:[{LabelKey:lk,Name:'仕事',GmailLabelId:'Label_1',SyncedName:'仕事'}]});
+ h.deps.store.batchJobPatches=()=>{throw Object.assign(Error('private@example.com raw filter'),{code:'GFM_REFERENCE_UPDATE',reference:{code:retryable?'SERVICE_UNAVAILABLE':'ANCHOR_INVALID',stage:retryable?'WRITE':'PRECHECK',retryable,count:1,serviceStatus:retryable?503:undefined,private:'do not persist'}});};
+ h.rows[0].UserLabel='仕事';h.rows[0].UserLabelRef='';const controller=S.create(h.deps);controller.preview();const ticket=controller.prepare();h.jobs.accept(ticket,true);let result;for(let n=0;n<20;n++){result=h.jobs.run();if(result.status==='PAUSED')break;}
+ assert.equal(result.status,'PAUSED');assert.equal(result.diagnostic?.code,retryable?'SERVICE_UNAVAILABLE':'ANCHOR_INVALID');assert.equal(result.diagnostic?.attempt,retryable?5:1);assert.equal(result.diagnostic?.operation,'REFERENCE_UPDATE');assert.equal(typeof result.diagnostic?.at,'number');assert.equal(result.diagnostic?.count,1);assert.ok(!JSON.stringify(h.props.filterJob).includes('private'));assert.ok(!JSON.stringify(h.history).includes('private'));assert.equal(h.writes.length,0);
+});
